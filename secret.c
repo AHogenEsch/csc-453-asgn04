@@ -1,3 +1,4 @@
+#include <minix/type.h>
 #include <minix/drivers.h>
 #include <minix/chardriver.h>
 #include <stdio.h>
@@ -36,11 +37,11 @@ static int lu_state_restore(void);
 /* Entry points to the secret driver. */
 static struct chardriver secret_tab =
 {
-    .cdr_open  = secret_open,
+    .cdr_open = secret_open,
     .cdr_close = secret_close,
-    .cdr_read  = secret_read,
+    .cdr_read = secret_read,
     .cdr_write = secret_write,
-    .cdr_ioctl  = secret_ioctl,
+    .cdr_ioctl = secret_ioctl,
 };
  /** State variable to count the number of times the device has been opened.
  * Note that this is not the regular type of open counter: it never decreases.
@@ -153,11 +154,11 @@ static int secret_open(devminor_t UNUSED(minor), int access,
              * "empty" (secret_len=0). It can still be written to by the owner.
              */
             read_fd_opened_since_write = TRUE; 
-            // Even if empty, a read fd is opened. This sets up for close logic.
+        // Even if empty, a read fd is opened. This sets up for close logic.
             return OK;
         }
         
-        // This case should not be reachable for a valid open with R or W bit set
+    // This case should not be reachable for a valid open with R or W bit set
         open_count--;
         return EACCES;
     }
