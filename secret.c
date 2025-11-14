@@ -6,8 +6,8 @@
 #include <minix/const.h> // R_BIT and W_BIT
 #include <sys/ioc_secret.h> // SSGRANT definition
 #include <sys/ucred.h> // struct ucred
-#include <minix/safecopies.h> // sys_safecopyfrom/to
 #include <minix/syslib.h> // sys_getnucred
+#include <minix/type.h>
 #include "secret.h"
  
 /*
@@ -34,10 +34,10 @@ static int lu_state_restore(void);
 /* Entry points to the secret driver. */
 static struct chardriver secret_tab =
 {
-    .cdr_open   = secret_open,
-    .cdr_close  = secret_close,
-    .cdr_read   = secret_read,
-    .cdr_write  = secret_write,
+    .cdr_open  = secret_open,
+    .cdr_close = secret_close,
+    .cdr_read  = secret_read,
+    .cdr_write = secret_write,
     .cdr_ioctl  = secret_ioctl,
 };
  /** State variable to count the number of times the device has been opened.
@@ -182,7 +182,7 @@ static int secret_open(devminor_t UNUSED(minor), int access,
         return EACCES;
     }
 }
- 
+
 static int secret_close(devminor_t UNUSED(minor))
 {
     // Decrement the file descriptor count
@@ -199,7 +199,6 @@ static int secret_close(devminor_t UNUSED(minor))
     
     return OK;
 }
- 
 static ssize_t secret_read(devminor_t UNUSED(minor), u64_t position,
     endpoint_t endpt, cp_grant_id_t grant, size_t size, int UNUSED(flags),
     cdev_id_t UNUSED(id))
@@ -223,9 +222,9 @@ static ssize_t secret_read(devminor_t UNUSED(minor), u64_t position,
     }
 
     // Check for EOF or limit read size
-    if (position >= secret_len) return 0;     /* EOF: read beyond written data */
+    if (position >= secret_len) return 0; /* EOF: read beyond written data */
     if (position + size > secret_len)
-        size = (size_t)(secret_len - (size_t)position);   /* Limit read to available data */
+        size = (size_t)(secret_len - (size_t)position); /* Limit read to available data */
 
     // Copy the requested part to the caller's buffer.
     char *ptr = secret_data + (size_t)position;
