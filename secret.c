@@ -19,8 +19,9 @@ static ssize_t secret_read(devminor_t minor, u64_t position, endpoint_t endpt,
     cp_grant_id_t grant, size_t size, int flags, cdev_id_t id);
 static ssize_t secret_write(devminor_t minor, u64_t position, endpoint_t endpt,
     cp_grant_id_t grant, size_t size, int flags, cdev_id_t id);
-static int secret_ioctl(devminor_t minor, unsigned long request, endpoint_t endpt,
-    cp_grant_id_t grant, int flags, endpoint_t user_endpt, cdev_id_t id);
+static int secret_ioctl(devminor_t minor, 
+    unsigned long request, endpoint_t endpt, cp_grant_id_t grant, 
+    int flags, endpoint_t user_endpt, cdev_id_t id);
 
 // Helper function to reset the secret state
 static void secret_reset(void);
@@ -46,34 +47,13 @@ static struct chardriver secret_tab =
 
 static int open_counter;
 
-/* General Behaviour:
-    • The secret held by /dev/Secret may be of fixed size. Exactly how big doesn’t matter, but
-    it should be settable by defining the macro SECRET SIZE in your driver’s source. Attempts to
-    write more into the device than will fit will result in an ENOSPC response.
-    The test harness will expect your buffer size to be 8192 (8KB), but, of course, this should
-    be configurable by changing a SECRET SIZE. To make it reconfigureable while compiling (do),
-    define it 
-
-    • /dev/Secret supports a single ioctl(2) call, SSGRANT, which allows the owner of a secret to
-    change the ownership to another user. E.g.:
-    ioctl(fd, SSGRANT, &other uid);
-    Any ioctl(2) requests other than SSGRANT get a ENOTTY response.
-    • /dev/Secret should preserve its state over live update events.
-
-    Do be careful not to allow a process to write beyond the end of the secret buffer, nor to read
-        beyond what has been written. Be aware that a process may read or write many times so you
-        will have to keep track of where the last read or write occurred.
-*/
 
 // Variables:
 // The secret data buffer itself.
 static char secret_data[SECRET_SIZE];
 
-// The UID of the current owner of the secret. A value of NO_UID indicates no owner.
-// NO_UID is typically -1 in MINIX. Using a large invalid value for safety, or just 0 (root) initially.
-// For robust MINIX, a specific value like (uid_t) -1 should be defined/used for "no owner."
-// For simplicity, let's assume a special value of 0 is used for 'no secret/owner' if root isn't the owner,
-// but since root is UID 0, let's use a very large value or -1 cast for 'no owner'.
+// The UID of the current owner of the secret. 
+// A value of NO_OWNER_UID indicates no owner.
 static uid_t secret_owner = NO_OWNER_UID;
 // Current size of the secret data (number of bytes written).
 static size_t secret_len = 0;
@@ -81,16 +61,12 @@ static size_t secret_len = 0;
 // The current number of open file descriptors for this device.
 static int open_count = 0;
 
-// Flag to track if a read file descriptor has ever been opened since the last secret write/reset.
+/* Flag to track if a read file descriptor 
+ * has ever been opened since the last secret write/reset. 
+ */
 static int read_fd_opened_since_write = FALSE;
 
-// static int isFull = 0; // 1 is full
-//static lastRead = NULL
-
-
-// --- Helper Function Implementation ---
-
-/**
+/*
  * Resets the state of the secret device (clears data, removes owner).
  */
 static void secret_reset(void)
@@ -98,8 +74,7 @@ static void secret_reset(void)
     secret_owner = NO_OWNER_UID;
     secret_len = 0;
     read_fd_opened_since_write = FALSE;
-    // Clearing the buffer is optional for security but not strictly required by the spec
-    // memset(secret_data, 0, SECRET_SIZE); 
+    memset(secret_data, 0, SECRET_SIZE); 
 }
 
 
@@ -139,13 +114,13 @@ static int secret_open(devminor_t UNUSED(minor), int access,
         }
 
         if (access & R_BIT) {
-             // May be opened for reading by a process owned by the owner of the secret
+    // May be opened for reading by a process owned by the owner of the secret
             if (caller_uid == secret_owner) {
-                // Keep track of the fact that a read descriptor has been opened.
+            // Keep track of the fact that a read descriptor has been opened.
                 read_fd_opened_since_write = TRUE;  // Used for close logic
                 return OK;
             } else {
-                 // Attempts to read a secret belonging to another user result in EACCES
+    // Attempts to read a secret belonging to another user result in EACCES
                 open_count--;
                 return EACCES;
             }
@@ -155,25 +130,29 @@ static int secret_open(devminor_t UNUSED(minor), int access,
         open_count--;
         return EACCES;
 
-     } else { // Empty (owned by nobody) [cite: 14]
+     } else { // Empty (owned by nobody)
 
         if (access & W_BIT) {
-            // Open for writing can only succeed if the secret is not owned by anybody. 
-             // This means it may only be opened for writing once. 
-            // Since we check secret_owner != NO_OWNER_UID above, we are guaranteed it's not owned.
-             // The owner of that process will then become the owner of the secret.
+    // Open for writing can only succeed if the secret is not owned by anybody. 
+        // This means it may only be opened for writing once. 
+        // The owner of that process will then become the owner of the secret.
             secret_owner = caller_uid;
-            // The secret is "full" now, preventing subsequent opens for writing until reset.
+// The secret is "full" now, preventing new opens for writing until reset.
             return OK;
         }
 
         if (access & R_BIT) {
-             // Any process may open /dev/Secret for reading 
-             // That owner of that process will then become the owner of the secret (determined via getnucred(2))
+             /* Any process may open /dev/Secret for reading 
+              * That owner of that process will then become the owner 
+              * of the secret (determined via getnucred(2))
+              */
             secret_owner = caller_uid;
-            // Note: Unlike a successful write, a read open when empty does *not* set the secret_len, 
-            // so it's "owned" but logically "empty" (secret_len=0). It can still be written to by the owner.
-            read_fd_opened_since_write = TRUE; // Even if empty, a read fd is opened. This sets up for close logic.
+            /*  Note: Unlike a successful write, a read open when empty
+             * does *not* set the secret_len, so it's "owned" but logically
+             * "empty" (secret_len=0). It can still be written to by the owner.
+             */
+            read_fd_opened_since_write = TRUE; 
+            // Even if empty, a read fd is opened. This sets up for close logic.
             return OK;
         }
         
@@ -190,9 +169,11 @@ static int secret_close(devminor_t UNUSED(minor))
         open_count--;
     }
 
-    // Closing: when the last file descriptor is closed after any read file descriptor has been opened,
-     // /dev/Secret reverts to being empty.
-     // The secret resets when the last file descriptor closes *after* a read file descriptor has been opened.
+    /* Closing: when the last file descriptor is closed after any read file
+     * descriptor has been opened, /dev/Secret reverts to being empty.
+     * The secret resets when the last file descriptor closes *after* a 
+     * read file descriptor has been opened.
+     */
     if (open_count == 0 && read_fd_opened_since_write == TRUE) {
         secret_reset();
     }
@@ -205,7 +186,9 @@ static ssize_t secret_read(devminor_t UNUSED(minor), u64_t position,
 {
     // Check if a secret exists to read
     if (secret_owner == NO_OWNER_UID || secret_len == 0) {
-        // While the secret owner might be set by a read-open, if secret_len is 0, there's nothing to read.
+        /* While the secret owner might be set by a read-open, 
+         * if secret_len is 0, there's nothing to read.
+         */
         return 0; // EOF if no data written
     }
 
@@ -223,8 +206,8 @@ static ssize_t secret_read(devminor_t UNUSED(minor), u64_t position,
 
     // Check for EOF or limit read size
     if (position >= secret_len) return 0; /* EOF: read beyond written data */
-    if (position + size > secret_len)
-        size = (size_t)(secret_len - (size_t)position); /* Limit read to available data */
+    if (position + size > secret_len) /* Limit read to available data */
+        size = (size_t)(secret_len - (size_t)position); 
 
     // Copy the requested part to the caller's buffer.
     char *ptr = secret_data + (size_t)position;
@@ -239,17 +222,20 @@ static ssize_t secret_write(devminor_t UNUSED(minor), u64_t position,
     endpoint_t endpt, cp_grant_id_t grant, size_t size, int UNUSED(flags),
     cdev_id_t UNUSED(id))
 {
-    // The device only allows one write, and only when not full/owned.
-    // The permission check logic should largely be in open(), but we re-check for safety.
-
-    // If position is not 0, something is wrong as this device is not seekable.
+    /* The device only allows one write, and only when not full/owned.
+     * The permission check logic should largely be in open(), 
+     * but we re-check for safety. If position is not 0, something is wrong
+     *  as this device is not seekable.
+     */ 
     if (position != 0) {
-        // Since the device is not seekable, any non-zero position indicates a logic error or
-        // a write that should be treated as a new write, but a new write shouldn't happen 
-        // if the device is already logically "full" (owner set).
-        // Let's rely on the open check for ownership. If open was successful for write, 
-        // it means we are either the first writer or the owner is set to us and we're writing
-        // to an empty secret (secret_len == 0) but the owner is set.
+        /* Since the device is not seekable, any non-zero position indicates
+         * a logic error or a write that should be treated as a new write,
+         * but a new write shouldn't happen if the device is already
+         * logically "full" (owner set). Let's rely on the open check for
+         * ownership. If open was successful for write, it means we are
+         * either the first writer or the owner is set to us and we're writing
+         * to an empty secret (secret_len == 0) but the owner is set.
+         */ 
     }
     
      // Check if the write operation fits within the buffer size.
@@ -257,14 +243,18 @@ static ssize_t secret_write(devminor_t UNUSED(minor), u64_t position,
         return ENOSPC;
     }
     
-    // Check if the current secret is already written (secret_len > 0), a new write shouldn't be allowed.
-    // Since open for write is only allowed once (and sets the owner), the logic is:
-    // 1. Secret owner must be set (from the open call)
-    // 2. Secret length must be 0 (meaning this is the *first* successful write operation)
+    /* Check if the current secret is already written (secret_len > 0), 
+     * a new write shouldn't be allowed. Since open for write is only allowed
+     * once (and sets the owner), the logic is:
+     * 1. Secret owner must be set (from the open call)
+     * 2. Secret length must be 0 (meaning this is the first successful write)
+     */
     if (secret_len > 0) {
-        // This case indicates a subsequent write attempt after a successful initial write.
-        // This should not happen if the open logic is correct (only one write open allowed).
-        // If it does, we return ENOSPC, as the device is logically "full."
+        /* This case indicates a subsequent write attempt after a successful
+         * initial write. This should not happen if the open logic is correct
+         * (only one write open allowed). If it does, we return ENOSPC, as 
+         * the device is logically "full."
+         */ 
         return ENOSPC;
     }
 
@@ -274,16 +264,19 @@ static ssize_t secret_write(devminor_t UNUSED(minor), u64_t position,
         return r;
     }
 
-    // Update the secret length and reset the read_fd_opened_since_write flag since a new secret is written.
+    // Update the secret length and reset the read_fd_opened_since_write 
+    // flag since a new secret is written.
     secret_len = size;
-    read_fd_opened_since_write = FALSE; // A new write should reset the closure flag state
+    // A new write should reset the closure flag state
+    read_fd_opened_since_write = FALSE; 
 
     // Return the number of bytes written.
     return size;
 }
 
-static int secret_ioctl(devminor_t UNUSED(minor), unsigned long request, endpoint_t endpt,
-    cp_grant_id_t grant, int UNUSED(flags), endpoint_t UNUSED(user_endpt), cdev_id_t UNUSED(id))
+static int secret_ioctl(devminor_t UNUSED(minor), unsigned long request, 
+    endpoint_t endpt, cp_grant_id_t grant, int UNUSED(flags), 
+    endpoint_t UNUSED(user_endpt), cdev_id_t UNUSED(id))
 {
      // Check for the single supported ioctl call, SSGRANT.
     if (request == SSGRANT) {
@@ -302,8 +295,9 @@ static int secret_ioctl(devminor_t UNUSED(minor), unsigned long request, endpoin
             return EACCES; // Permission denied if not the owner
         }
 
-         // Get the parameter (the new owner's UID) from the caller's address space.
-        r = sys_safecopyfrom(endpt, grant, 0, (vir_bytes) &grantee, sizeof(grantee));
+// Get the parameter (the new owner's UID) from the caller's address space.
+        r = sys_safecopyfrom(endpt, grant, 0, 
+            (vir_bytes) &grantee, sizeof(grantee));
         if (r != OK) {
             return r;
         }
@@ -329,13 +323,15 @@ static int sef_cb_lu_state_save(int UNUSED(state), int UNUSED(flags)) {
      // Save device state variables
     ds_publish_u32("secret_owner", secret_owner, DSF_OVERWRITE);
     ds_publish_u32("secret_len", (u32_t) secret_len, DSF_OVERWRITE);
-    ds_publish_u32("read_fd_opened_since_write", read_fd_opened_since_write, DSF_OVERWRITE);
+    ds_publish_u32("read_fd_opened_since_write", 
+        read_fd_opened_since_write, DSF_OVERWRITE);
     ds_publish_u32("open_count", open_count, DSF_OVERWRITE);
 
      // Save the secret data itself
     if (secret_len > 0) {
         // Only publish the portion that has been written
-        if ((r = ds_publish_mem("secret_data", secret_data, secret_len, DSF_OVERWRITE)) != OK) {
+        if ((r = ds_publish_mem("secret_data", secret_data, secret_len,
+            DSF_OVERWRITE)) != OK) {
             return r;
         }
     }
@@ -377,8 +373,8 @@ static int lu_state_restore() {
             return r;
         }
         ds_delete_mem("secret_data");
-        // Re-check: If length is less than original secret_len, we have a problem, but 
-        // for now, assume retrieve was complete.
+        // Re-check: If length is less than original secret_len,
+        //  we have a problem, but for now, assume retrieve was complete.
     }
     
     return OK;
