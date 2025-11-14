@@ -12,12 +12,7 @@
 
 // MANUAL DEFINITIONS, the compiler was not seeing the correct headers
 typedef unsigned int devminor_t;
-typedef unsigned long long u64_t;
 typedef unsigned int cdev_id_t;
-// uid_t is technically in <sys/ucred.h>, but defining it defensively
-typedef unsigned int uid_t; 
-// Macro for unused variables to suppress warnings
-#define UNUSED(x) (void)x
 /*
  * Function prototypes for the secret driver.
  */
@@ -141,7 +136,7 @@ static int secret_open(devminor_t UNUSED(minor), int access,
      } else { // Empty (owned by nobody)
 
         if (access & W_BIT) {
-    // Open for writing can only succeed if the secret is not owned by anybody. 
+    // Open for writing can only succeed if the secret is not owned by anybody.
         // This means it may only be opened for writing once. 
         // The owner of that process will then become the owner of the secret.
             secret_owner = caller_uid;
