@@ -1,4 +1,3 @@
-#include <minix/type.h>
 #include <minix/drivers.h>
 #include <minix/chardriver.h>
 #include <stdio.h>
@@ -8,10 +7,17 @@
 #include <sys/ioc_secret.h> // SSGRANT definition
 #include <sys/ucred.h> // struct ucred
 #include <minix/syslib.h> // sys_getnucred
-#include <minix/com.h>
 #include <sys/types.h>
 #include "secret.h"
- 
+
+// MANUAL DEFINITIONS, the compiler was not seeing the correct headers
+typedef unsigned int devminor_t;
+typedef unsigned long long u64_t;
+typedef unsigned int cdev_id_t;
+// uid_t is technically in <sys/ucred.h>, but defining it defensively
+typedef unsigned int uid_t; 
+// Macro for unused variables to suppress warnings
+#define UNUSED(x) (void)x
 /*
  * Function prototypes for the secret driver.
  */
