@@ -7,7 +7,8 @@
 #include <sys/ioc_secret.h> // SSGRANT definition
 #include <sys/ucred.h> // struct ucred
 #include <minix/syslib.h> // sys_getnucred
-#include <minix/type.h>
+#include <minix/com.h>
+#include <sys/types.h>
 #include "secret.h"
  
 /*
