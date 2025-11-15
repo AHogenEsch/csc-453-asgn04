@@ -11,16 +11,8 @@
 
 #include "secret.h" /* For SECRET_SIZE */
 
-/*
- * The assignment requires the SECRET_SIZE to be configurable via secret.h.
- * We include a default definition here for compilation in case it is missing.
- */
-#ifndef SECRET_SIZE
-#define SECRET_SIZE 8192
-#endif
 
 /*
- * FIX: Renamed 'D' to 'SAFEPK_D' to avoid redefinition conflict with pln.h.
  * Memory segment for safe copy operations. 0 is the data segment.
  */
 #define SAFEPK_D 0
@@ -29,7 +21,7 @@
 #define DS_SECRET_STATE_LABEL "secret_keeper_state"
 
 /* Driver name string */
-#define SECRET_KEEPER_NAME "secretkeeper"
+#define SECRET_KEEPER_NAME "secret"
 
 /*
  * Global state structure for /dev/Secret.
@@ -37,19 +29,24 @@
  * and must be saved/restored during Live Update.
  */
 struct secret_state {
-    uid_t owner_uid;         /* UID of the current secret owner (INVAL_UID if empty) */
-    size_t secret_len;       /* Actual size of the secret data stored (0 if empty) */
-    unsigned int open_count; /* Number of currently open file descriptors */
-    int read_opened;         /* Flag: 1 if a file descriptor has been opened for reading */
-    size_t write_position;   /* Current offset for read/write operations */
-    char data[SECRET_SIZE];  /* The secret data buffer */
+    /* UID of the current secret owner (INVAL_UID if empty) */
+    uid_t owner_uid;
+    /* Actual size of the secret data stored (0 if empty) */     
+    size_t secret_len;
+    /* Number of currently open file descriptors */   
+    unsigned int open_count; 
+    /* Flag: 1 if a file descriptor has been opened for reading */
+    int read_opened;
+     /* Current offset for read/write operations */
+    size_t write_position;
+    /* The secret data buffer */
+    char data[SECRET_SIZE];  
 };
 
 /* The single global instance of our state */
 static struct secret_state secret_global_state;
 
 /* Function prototypes for driver callbacks */
-/* static char *secret_name(void); -- REMOVED, as chardriver struct doesn't use it */
 static int secret_open(message *m_ptr);
 static int secret_close(message *m_ptr);
 static struct device *secret_prepare(dev_t device);
@@ -107,7 +104,8 @@ static int secret_init_fresh(int type, sef_init_info_t *info)
         secret_init_state();
     } else { /* SEF_INIT_LU or SEF_INIT_RESTART */
         /* Retrieve the state from the Data Store (DS) */
-        r = ds_retrieve_mem(DS_SECRET_STATE_LABEL, (char *)&secret_global_state, &len);
+        r = ds_retrieve_mem(DS_SECRET_STATE_LABEL, 
+            (char *)&secret_global_state, &len);
         if (r == OK) {
             /* State successfully restored */
             printf("%s: State restored from DS.\n", SECRET_KEEPER_NAME);
@@ -115,7 +113,8 @@ static int secret_init_fresh(int type, sef_init_info_t *info)
             secret_global_state.open_count = 0;
         } else {
             /* If retrieval fails, start fresh */
-            printf("%s: DS retrieval failed (%d). Starting fresh.\n", SECRET_KEEPER_NAME, r);
+            printf("%s: DS retrieval failed (%d). Starting fresh.\n", 
+                SECRET_KEEPER_NAME, r);
             secret_init_state();
         }
         /* Delete the state from DS after retrieval */
@@ -196,13 +195,13 @@ static int secret_open(message *m_ptr)
                 secret_global_state.open_count++;
                 return OK;
             } else {
-                /* Attempts to read a secret belonging to another user result in EACCES */
+    /* Attempts to read a secret belonging to another user result in EACCES */
                 return EACCES;
             }
         }
     }
     
-    /* Catch-all for non R/W opens (e.g., O_NONBLOCK only, or just using open/close) */
+/* Catch-all for non R/W opens (O_NONBLOCK only, or just using open/close) */
     secret_global_state.open_count++;
     return OK;
 }
@@ -222,7 +221,8 @@ static int secret_close(message *m_ptr)
      * When the last file descriptor is closed after any read file descriptor
      * has been opened, /dev/Secret reverts to being empty.
      */
-    if (secret_global_state.open_count == 0 && secret_global_state.read_opened == 1) {
+    if (secret_global_state.open_count == 0 && \
+         secret_global_state.read_opened == 1) {
         secret_init_state();
     }
 
@@ -230,7 +230,8 @@ static int secret_close(message *m_ptr)
 }
 
 /*
- * Prepare callback. Reports device geometry (always SECRET_SIZE for this device).
+ * Prepare callback. Reports device geometry 
+ * (always SECRET_SIZE for this device).
  */
 static struct device *secret_prepare(dev_t device)
 {
@@ -279,16 +280,16 @@ static int secret_transfer(endpoint_t endpt, int opcode, u64_t position,
             return ENOSPC; /* No space left in the secret buffer */
         }
 
-        /* FIX: Use iov[0].iov_addr (a pointer) to carry the grant ID (an integer) */
+/* Use iov[0].iov_addr (a pointer) to carry the grant ID (an integer) */
         r = sys_safecopyfrom(user_endpt, (cp_grant_id_t)iov[0].iov_addr, 0,
-                             (vir_bytes)(secret_global_state.data + secret_global_state.secret_len),
-                             bytes_to_transfer, SAFEPK_D); /* FIX: Use SAFEPK_D */
+            (vir_bytes)(secret_global_state.data +\
+                secret_global_state.secret_len), bytes_to_transfer, SAFEPK_D);
 
         if (r != OK) {
             return r;
         }
         
-        /* Update state: secret size is total size, write_position is current offset */
+/* Update state: secret size is total size, write_position is current offset*/
         secret_global_state.secret_len += bytes_to_transfer;
         secret_global_state.write_position = secret_global_state.secret_len;
 
@@ -296,17 +297,18 @@ static int secret_transfer(endpoint_t endpt, int opcode, u64_t position,
 
     } else if (opcode == DEV_GATHER_S) { /* Read (data from driver to user) */
         
-        bytes_left = secret_global_state.secret_len - secret_global_state.write_position;
+        bytes_left = secret_global_state.secret_len - \
+        secret_global_state.write_position;
         bytes_to_transfer = MIN(iov[0].iov_size, bytes_left);
 
         if (bytes_to_transfer == 0) {
             return 0; /* EOF */
         }
 
-        /* FIX: Use iov[0].iov_addr (a pointer) to carry the grant ID (an integer) */
+    /* Use iov[0].iov_addr (a pointer) to carry the grant ID (an integer) */
         r = sys_safecopyto(user_endpt, (cp_grant_id_t)iov[0].iov_addr, 0,
-                           (vir_bytes)(secret_global_state.data + secret_global_state.write_position),
-                           bytes_to_transfer, SAFEPK_D); /* FIX: Use SAFEPK_D */
+            (vir_bytes)(secret_global_state.data + \
+            secret_global_state.write_position),bytes_to_transfer, SAFEPK_D);
 
         if (r != OK) {
             return r;
@@ -329,7 +331,7 @@ static int secret_ioctl(message *m_ptr)
 {
     endpoint_t caller_endpt = m_ptr->m_source;
     int request = m_ptr->REQUEST;
-    /* FIX: Cast IO_GRANT to cp_grant_id_t to avoid pointer-to-integer warning */
+    /* Cast IO_GRANT to cp_grant_id_t to avoid pointer-to-integer warning */
     cp_grant_id_t grant_id = (cp_grant_id_t)m_ptr->IO_GRANT;
     struct ucred ucred;
     uid_t grantee_uid;
@@ -348,11 +350,12 @@ static int secret_ioctl(message *m_ptr)
         }
         
         /* Copy the uid_t argument from the user's address space */
-        r = sys_safecopyfrom(caller_endpt, grant_id, 0, (vir_bytes)&grantee_uid, 
-                             sizeof(grantee_uid), SAFEPK_D); /* FIX: Use SAFEPK_D */
+        r = sys_safecopyfrom(caller_endpt, grant_id, 0, \
+            (vir_bytes)&grantee_uid, sizeof(grantee_uid), SAFEPK_D);
 
         if (r != OK) {
-            printf("%s: sys_safecopyfrom failed for SSGRANT: %d\n", SECRET_KEEPER_NAME, r);
+            printf("%s: sys_safecopyfrom failed for SSGRANT: %d\n",\
+                 SECRET_KEEPER_NAME, r);
             return EFAULT;
         }
 
