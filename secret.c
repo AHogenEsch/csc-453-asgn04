@@ -253,8 +253,8 @@ static int secret_transfer(endpoint_t endpt, int opcode, u64_t position,\
 		bytes_to_transfer = MIN(iov[0].iov_size, bytes_left);
 
 		/* iov[0].iov_addr holds the grant ID */
-		r = sys_safecopyto(user_endpt, (cp_grant_id_t)iov[0].iov_addr, 0,\
-			(vir_bytes)(secret_global_state.data + pos_offset), \
+		r = sys_safecopyto(user_endpt, (cp_grant_id_t)iov[0].iov_addr,\
+         0,(vir_bytes)(secret_global_state.data + pos_offset), \
 			bytes_to_transfer, SAFEPK_D);
 
 		if (r != OK) {
