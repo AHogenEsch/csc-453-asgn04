@@ -12,9 +12,7 @@
 #include "secret.h" /* For SECRET_SIZE */
 
 
-/*
- * Memory segment for safe copy operations. 0 is the data segment.
- */
+/* Memory segment for safe copy operations. 0 is the data segment. */
 #define SAFEPK_D 0
 
 /* DS label for storing driver state for Live Update */
@@ -25,8 +23,7 @@
 
 /*
  * Global state structure for /dev/Secret.
- * This structure holds all the information necessary for the driver's logic
- * and must be saved/restored during Live Update.
+ * Holds all driver state, for Live Update compatibility.
  */
 struct secret_state {
 	/* UID of the current secret owner (INVAL_UID if empty) */
@@ -70,9 +67,7 @@ static struct chardriver secret_driver = {
 	.cdr_other 	 = NULL, /* Not needed */
 };
 
-/*
- * Resets the global state to an "empty" secret.
- */
+/* Resets the global state to an "empty" secret. */
 static void secret_init_state(void)
 {
 	/* Mark the secret as not owned */
@@ -83,13 +78,9 @@ static void secret_init_state(void)
 	secret_global_state.open_count = 0;
 	/* No read has occurred since the last write/reset */
 	secret_global_state.read_opened = 0;
-	/* Data buffer contents are not strictly necessary to clear, but safe */
-	/* memset(secret_global_state.data, 0, SECRET_SIZE); */
 }
 
-/*
- * SEF Callback for fresh initialization or after live update/restart.
- */
+/* SEF Callback for fresh initialization or after live update/restart. */
 static int secret_init_fresh(int type, sef_init_info_t *info)
 {
 	size_t len = sizeof(secret_global_state);
@@ -122,9 +113,7 @@ static int secret_init_fresh(int type, sef_init_info_t *info)
 	return(OK);
 }
 
-/*
- * SEF Callback for saving state before a live update.
- */
+/* SEF Callback for saving state before a live update. */
 static int secret_save_state(int state)
 {
 	int r;
@@ -142,9 +131,7 @@ static int secret_save_state(int state)
 	return(r);
 }
 
-/*
- * Open callback. Handles permission and ownership logic.
- */
+/* Open callback. Handles permission and ownership logic. */
 static int secret_open(message *m_ptr)
 {
 	struct ucred ucred;
@@ -202,12 +189,11 @@ static int secret_open(message *m_ptr)
 	return OK;
 }
 
-/*
- * Close callback. Resets the secret state if conditions are met.
- */
+/* Close callback. Resets the secret state if conditions are met. */
 static int secret_close(message *m_ptr)
 {
-	/* UNUSED(m_ptr); is now removed as it's handled by chardriver.h logic */
+	/* Handled by chardriver.h logic */
+	/* UNUSED(m_ptr); */
 
 	if (secret_global_state.open_count > 0) {
 		secret_global_state.open_count--;
@@ -225,27 +211,21 @@ static int secret_close(message *m_ptr)
 	return OK;
 }
 
-/*
- * Prepare callback. Reports device geometry 
- * (always SECRET_SIZE for this device).
- */
+/* Prepare callback. Reports device geometry (always SECRET_SIZE). */
 static struct device *secret_prepare(dev_t device)
 {
 	static struct device dev;
-	/* UNUSED(device); is now removed as it's handled by chardriver.h logic */
+	/* Handled by chardriver.h logic */
+	/* UNUSED(device); */
 
 	/* For a single device, the size is the max secret size. */
 	dev.dv_base = make64(0, 0);
 	dev.dv_size = make64(0, SECRET_SIZE);
 
-	/* Internal position state is no longer used for character device I/O. */
-
 	return &dev;
 }
 
-/*
- * Transfer callback. Handles safe copy in (write) and out (read).
- */
+/* Transfer callback. Handles safe copy in (write) and out (read). */
 static int secret_transfer(endpoint_t endpt, int opcode, u64_t position,
 	iovec_t *iov, unsigned int nr_req, endpoint_t user_endpt)
 {
@@ -265,7 +245,6 @@ static int secret_transfer(endpoint_t endpt, int opcode, u64_t position,
 		return EACCES; 
 	}
 	
-	/* The position argument is now used for reads (lseek support) */
 	
 	if (opcode == DEV_SCATTER_S) { /* Write (data from user to driver) */
 		bytes_left = SECRET_SIZE - secret_global_state.secret_len;
@@ -275,10 +254,11 @@ static int secret_transfer(endpoint_t endpt, int opcode, u64_t position,
 			return ENOSPC; /* No space left in the secret buffer */
 		}
 
-/* Use iov[0].iov_addr (a pointer) to carry the grant ID (an integer) */
+/* iov[0].iov_addr holds the grant ID */
 		r = sys_safecopyfrom(user_endpt, (cp_grant_id_t)iov[0].iov_addr, 0,
 			(vir_bytes)(secret_global_state.data +\
-				secret_global_state.secret_len), bytes_to_transfer, SAFEPK_D);
+				secret_global_state.secret_len), bytes_to_transfer, \
+			SAFEPK_D);
 
 		if (r != OK) {
 			return r;
@@ -290,7 +270,8 @@ static int secret_transfer(endpoint_t endpt, int opcode, u64_t position,
 		return bytes_to_transfer;
 
 	} else if (opcode == DEV_GATHER_S) { /* Read (data from driver to user) */
-		size_t pos_offset = (size_t)position;
+		/* The VFS position argument supports lseek() */
+		size_t pos_offset = (size_t)low64(position);
 		
 		if (pos_offset >= secret_global_state.secret_len) {
 			return 0; /* EOF */
@@ -299,7 +280,7 @@ static int secret_transfer(endpoint_t endpt, int opcode, u64_t position,
 		bytes_left = secret_global_state.secret_len - pos_offset;
 		bytes_to_transfer = MIN(iov[0].iov_size, bytes_left);
 
-	/* Use iov[0].iov_addr (a pointer) to carry the grant ID (an integer) */
+/* iov[0].iov_addr holds the grant ID */
 		r = sys_safecopyto(user_endpt, (cp_grant_id_t)iov[0].iov_addr, 0,
 			(vir_bytes)(secret_global_state.data + pos_offset),\
 			bytes_to_transfer, SAFEPK_D);
@@ -317,9 +298,7 @@ static int secret_transfer(endpoint_t endpt, int opcode, u64_t position,
 	}
 }
 
-/*
- * Ioctl callback. Handles SSGRANT to change ownership.
- */
+/* Ioctl callback. Handles SSGRANT to change ownership. */
 static int secret_ioctl(message *m_ptr)
 {
 	endpoint_t caller_endpt = m_ptr->m_source;
@@ -367,8 +346,7 @@ int main(void)
 {
 	/*
 	 * SEF initialization must be done first.
-	 * We set callbacks for both initialization and state saving/restoring
-	 * for Live Update (LU).
+	 * Set callbacks for initialization and Live Update (LU) state saving.
 	 */
 	sef_setcb_init_fresh(secret_init_fresh);
 	sef_setcb_init_lu(secret_init_fresh); /* Use same init for LU restore */
