@@ -4,385 +4,348 @@
 #include <stdlib.h>
 #include <minix/ds.h>
 #include <minix/const.h> // R_BIT and W_BIT
-#include <sys/ioc_secret.h> // SSGRANT definition
+#include <sys/ioc_secret.h> // SSGRANT definition (relies on this header for SSGRANT)
 #include <sys/ucred.h> // struct ucred
-#include <minix/syslib.h> // sys_getnucred
+#include <minix/syslib.h> // sys_getnucred (or getnucred based on pln.h)
 #include <sys/types.h>
-#include "secret.h"
+#include <minix/sef.h> // For SEF functions
+#include <signal.h> // For SIGTERM
 
-#define MAX_SECRET_SIZE 8192
+#include "secret.h" // For SECRET_SIZE
 
-/* IOCTL commands for /dev/Secret */
-/* Note: _IOW and _IO require <sys/ioctl.h> */
-#define SSGRANT _IOW('S', 1, int) 
-#define SSREVOKE _IO('S', 2)
+// SSGRANT definition removed to prevent redefinition conflict with pln.h
 
-/* Storage for the secret */
-static char secret_data[MAX_SECRET_SIZE];
+#ifndef SSREVOKE
+// Define SSREVOKE manually if not provided by sys/ioc_secret.h
+#define SSREVOKE _IO('S', 2) /* Revoke ownership of the secret from a reader */
+#endif
+
+/* State of the device */
+static char secret_data[SECRET_SIZE];
 static size_t secret_len = 0;
+// Replaced NONE with 0, as NONE is often undefined without minix/endpoint.h
+static endpoint_t secret_owner = 0;
+static endpoint_t secret_reader = 0;
 
-/* Endpoint of the process currently owning the secret.
- * NONE is defined in <minix/endpoint.h>
- */
-static endpoint_t secret_owner = NONE;
 
-/*
- * Function Prototypes for the chardriver interface.
- * These must exactly match the required signatures.
- */
-static int secret_open(dev_t minor, int access);
-static int secret_close(dev_t minor);
-static int secret_ioctl(dev_t minor, unsigned long request, cp_grant_id_t grant, int flags, endpoint_t endpt);
-static int secret_transfer(dev_t minor, int operation, endpoint_t endpt, cp_grant_id_t grant, size_t pos, size_t chunk, int flags, struct device *dev);
+/* Function Prototypes for the character driver table */
+// Removed 'static' from nop_prepare to resolve conflict with pln.h prototype
+struct device *nop_prepare(int device);
+static void nop_cleanup(int minor);
+static int secret_open(devminor_t minor, int flags);
+static int secret_close(devminor_t minor);
+static int secret_ioctl(devminor_t minor, unsigned long request, endpoint_t user_endpt, cp_grant_id_t grant);
+static ssize_t secret_transfer(devminor_t minor, int operation, endpoint_t user_endpt,
+    cp_grant_id_t grant, size_t pos, size_t num_bytes, int flags);
 
-/* The prepare function must match the type defined in the header. */
-static struct device *nop_prepare(int device);
-static int nop_prepare_end(struct device *dev);
+/* SEF function prototypes */
+static void sef_local_startup(void);
+static int sef_cb_init(int type, sef_init_info_t *info);
+// Corrected signature for state save
+static void sef_cb_lu_state_save(void);
+static int sef_cb_signal_handler(int signo);
 
-/* Device table definition */
-static struct chardriver secret_tab = {
+// Dummy prototype for get_endpoint_by_uid (to satisfy ioctl compilation).
+// This function is expected to be provided by the environment's system libraries.
+int get_endpoint_by_uid(uid_t uid, endpoint_t *endpt);
+
+
+/* Character driver entry points */
+static struct chardriver secret_tab =
+{
     .cdr_prepare = nop_prepare,
-    .cdr_end = nop_prepare_end,
+    .cdr_cleanup = nop_cleanup, // Corrected from cdr_end
     .cdr_open = secret_open,
     .cdr_close = secret_close,
     .cdr_ioctl = secret_ioctl,
     .cdr_transfer = secret_transfer,
-    .cdr_cleanup = NULL,
+    .cdr_cancel = NULL,
+    .cdr_select = NULL,
+    .cdr_alarm = NULL,
+    .cdr_other = NULL
 };
 
-/* --- General Helper Functions (from chardriver examples) --- */
-static struct device *nop_prepare(int device)
+
+/* No-op function for prepare */
+struct device *nop_prepare(int device)
 {
+    static struct device dev;
     UNUSED(device);
-    return NULL; /* No specific device state to prepare */
+    return &dev;
 }
 
-static int nop_prepare_end(struct device *dev)
+static void nop_cleanup(int minor)
 {
-    UNUSED(dev);
-    return OK;
+    UNUSED(minor);
 }
 
-/* --- Driver Functions --- */
+/* Helper function to get the current user's UID */
+static uid_t get_caller_uid(endpoint_t user_endpt)
+{
+    struct ucred ucred;
+    // Fix: Using the 2-argument prototype from pln.h (endpoint, struct ucred *),
+    // which resolves the "too many arguments" and "incompatible pointer type" errors.
+    if (getnucred(user_endpt, &ucred) != OK) {
+        return (uid_t)-1;
+    }
+    // Return the Real UID (ruid) as the owner identity
+    return ucred.ruid;
+}
 
-/* secret_open: Called when /dev/Secret is opened. */
-static int secret_open(dev_t minor, int access)
+/* Helper function to get the current user's endpoint */
+static endpoint_t get_caller_endpt(void)
+{
+    return chardriver_get_caller_endpt();
+}
+
+
+/* Open routine */
+static int secret_open(devminor_t minor, int flags)
 {
     endpoint_t user_endpt;
-    uid_t user_uid;
 
     UNUSED(minor);
 
-    /* Get the endpoint and UID of the process calling open() */
-    user_endpt = chardriver_get_caller_endpt();
-    
-    /* Get credentials (UID) of the caller */
-    if (getnucred(user_endpt, &user_uid, NULL, NULL) != OK) {
-        return EPERM;
+    user_endpt = get_caller_endpt();
+
+    // Check for R/W access attempt, which is forbidden
+    if ((flags & (R_BIT | W_BIT)) == (R_BIT | W_BIT)) {
+        return EACCES;
     }
 
-    /* Case 1: The secret is currently UNOWNED (empty) */
-    if (secret_owner == NONE) {
-        /* If opening for R/W access, deny it. */
-        if ((access & (W_BIT | R_BIT)) == (W_BIT | R_BIT)) {
+    // Case 1: Device is not owned (secret_owner is 0)
+    if (secret_owner == 0) {
+        // Any open (R or W) on an empty device makes the process owner
+        if (flags & (W_BIT | R_BIT)) {
+            secret_owner = user_endpt;
+            return OK;
+        }
+        return EACCES;
+    }
+
+    // Case 2: Device is owned (secret_owner is not 0)
+    if (secret_owner != 0) {
+        // Deny write access if it's already owned
+        if (flags & W_BIT) {
             return EACCES;
         }
-        
-        /* If opening for writing, the caller becomes the new owner. */
-        if (access & W_BIT) {
-            secret_owner = user_endpt;
-            secret_len = 0; /* Clear previous data, prepare for new write */
-            return OK;
-        }
-        
-        /* If opening for reading, the caller also becomes the owner. */
-        if (access & R_BIT) {
-            secret_owner = user_endpt;
-            return OK;
-        }
-    } 
-    /* Case 2: The secret is OWNED */
-    else {
-        /* If the caller is the owner, allow R or W access (but not R/W) */
-        if (user_endpt == secret_owner) {
-            if ((access & (W_BIT | R_BIT)) == (W_BIT | R_BIT)) {
+
+        // Allow read access only if the user is the owner or the granted reader
+        if (flags & R_BIT) {
+            if (user_endpt == secret_owner || user_endpt == secret_reader) {
+                return OK;
+            } else {
+                // Deny read access to all others
                 return EACCES;
             }
-            return OK;
-        }
-        /* If the caller is NOT the owner, check for grant access */
-        else {
-            /* If the caller is the ROOT user, they can read the secret. */
-            if (user_uid == 0 && (access & R_BIT)) {
-                /* Root can read, but does not become the owner. */
-                return OK;
-            }
-            
-            /* Otherwise, deny access. */
-            return EACCES;
         }
     }
-    
-    return EACCES; /* Default deny */
+
+    return EACCES;
 }
 
-/* secret_close: Called when /dev/Secret is closed. */
-static int secret_close(dev_t minor)
+/* Close routine */
+static int secret_close(devminor_t minor)
 {
-    endpoint_t user_endpt = chardriver_get_caller_endpt();
-    
+    endpoint_t user_endpt;
+
     UNUSED(minor);
 
-    /* Only the owner closing the device should release the secret.
-     * Non-owners (like root readers) closing should not affect ownership.
-     */
+    user_endpt = get_caller_endpt();
+
+    // If the owner is closing, clear the secret and ownership.
     if (user_endpt == secret_owner) {
-        secret_owner = NONE;
+        secret_owner = 0;
+        secret_reader = 0;
         secret_len = 0;
     }
+    // Non-owner readers close their file descriptor, but the grant remains until revoked.
 
     return OK;
 }
 
-/* secret_transfer: Handles read and write operations. */
-static int secret_transfer(dev_t minor, int operation, endpoint_t endpt, cp_grant_id_t grant, size_t pos, size_t chunk, int flags, struct device *dev)
+/* Read/Write transfer routine */
+static ssize_t secret_transfer(devminor_t minor, int operation, endpoint_t user_endpt,
+    cp_grant_id_t grant, size_t pos, size_t num_bytes, int flags)
 {
-    endpoint_t user_endpt = chardriver_get_caller_endpt();
-    int r = EPERM; /* Default return: Permission denied */
+    ssize_t bytes_transferred = 0;
 
     UNUSED(minor);
     UNUSED(flags);
-    UNUSED(dev);
 
-    /* The transfer must be performed by the owner (or root for reading) */
-    if (user_endpt != secret_owner) {
-        /* Check if caller is root (UID 0) and is reading */
-        if (operation == DEV_READ) {
-            uid_t user_uid;
-            if (getnucred(user_endpt, &user_uid, NULL, NULL) == OK && user_uid == 0) {
-                /* Root is allowed to read. Continue below. */
-            } else {
-                return EACCES;
-            }
-        } else {
-            /* Non-owner (non-root) cannot write. */
+    if (secret_owner == 0) {
+        return EACCES;
+    }
+
+    // Fix: Assuming DEV_READ and DEV_WRITE are defined in minix/drivers.h or chardriver.h
+    if (operation == DEV_READ) {
+        if (user_endpt != secret_owner && user_endpt != secret_reader) {
             return EACCES;
         }
-    }
-    
-    /* Ensure the operation is within the bounds of the secret buffer */
-    if (pos >= MAX_SECRET_SIZE) {
-        return 0; /* EOF */
-    }
-    
-    if (pos + chunk > MAX_SECRET_SIZE) {
-        chunk = MAX_SECRET_SIZE - pos;
-    }
 
-    if (operation == DEV_READ) {
-        /* Only read up to the currently written secret length */
-        if (pos + chunk > secret_len) {
-            chunk = secret_len - pos;
+        if (pos >= secret_len) {
+            return 0; // EOF
         }
-        
-        if (chunk == 0) return 0; /* EOF if nothing to read */
+        if (pos + num_bytes > secret_len) {
+            num_bytes = secret_len - pos;
+        }
 
-        /* Copy data FROM driver TO user process */
-        /* IMPORTANT: sys_safecopyto now takes 6 arguments (including flags=0) */
-        r = sys_safecopyto(endpt, grant, 0, (vir_bytes) (secret_data + pos), chunk, 0);
-        
-        if (r != OK) {
-            printf("SECRET: sys_safecopyto failed: %d\n", r);
-            return r;
+        if (sys_safecopyto(user_endpt, grant, 0,
+            (vir_bytes)(secret_data + pos), num_bytes) != OK) {
+            return EIO;
         }
-        
-        return chunk;
+
+        bytes_transferred = num_bytes;
 
     } else if (operation == DEV_WRITE) {
-        /* Only write up to the MAX_SECRET_SIZE (truncation/error handling) */
-        if (pos + chunk > MAX_SECRET_SIZE) {
-            /* The assignment suggests "No space left on device" (ENOSPC) */
-            return ENOSPC;
+        if (user_endpt != secret_owner) {
+            return EACCES;
         }
 
-        /* Copy data FROM user process TO driver */
-        /* IMPORTANT: sys_safecopyfrom now takes 6 arguments (including flags=0) */
-        r = sys_safecopyfrom(endpt, grant, 0, (vir_bytes) (secret_data + pos), chunk, 0);
-
-        if (r != OK) {
-            printf("SECRET: sys_safecopyfrom failed: %d\n", r);
-            return r;
+        if (pos + num_bytes > SECRET_SIZE) {
+            if (pos >= SECRET_SIZE) {
+                return ENOSPC;
+            }
+            num_bytes = SECRET_SIZE - pos;
         }
 
-        /* Update the length of the secret if we're writing past the old end */
-        if (pos + chunk > secret_len) {
-            secret_len = pos + chunk;
+        if (sys_safecopyfrom(user_endpt, grant, 0,
+            (vir_bytes)(secret_data + pos), num_bytes) != OK) {
+            return EIO;
         }
-        
-        return chunk;
+
+        if (pos + num_bytes > secret_len) {
+            secret_len = pos + num_bytes;
+        }
+
+        bytes_transferred = num_bytes;
     }
 
-    return EIO; /* Invalid operation */
+    return bytes_transferred;
 }
 
-/* secret_ioctl: Handles SSGRANT and SSREVOKE commands. */
-static int secret_ioctl(dev_t minor, unsigned long request, cp_grant_id_t grant, int flags, endpoint_t endpt)
+/* IOCTL routine */
+static int secret_ioctl(devminor_t minor, unsigned long request, endpoint_t user_endpt, cp_grant_id_t grant)
 {
-    endpoint_t user_endpt = chardriver_get_caller_endpt();
-    int target_uid;
-    endpoint_t target_endpt;
     int r;
+    uid_t target_uid;
+    endpoint_t target_endpt;
 
     UNUSED(minor);
-    UNUSED(grant);
-    UNUSED(flags);
 
-    /* Only the owner is allowed to call ioctl */
+    // Only the owner of the secret can perform IOCTLs
     if (user_endpt != secret_owner) {
         return EPERM;
     }
 
     switch (request) {
         case SSGRANT: {
-            /* SSGRANT: _IOW('S', 1, int) - Expects a UID from the user */
-            
-            /* Read the target UID from user space via the grant */
-            /* The user must have created a grant for an integer (UID) */
-            /* IMPORTANT: sys_safecopyfrom now takes 6 arguments (including flags=0) */
-            r = sys_safecopyfrom(endpt, grant, 0, (vir_bytes)&target_uid, sizeof(int), 0);
-            
-            if (r != OK) {
-                printf("SECRET: sys_safecopyfrom failed in SSGRANT: %d\n", r);
+            // Owner grants read permission to a target UID.
+            size_t size = sizeof(target_uid);
+
+            // Copy the target UID from the user process via grant
+            if (sys_safecopyfrom(user_endpt, grant, 0, (vir_bytes)&target_uid, size) != OK) {
                 return EFAULT;
             }
 
-            /* The driver is now responsible for setting the new owner.
-             * Since the assignment says "grant access to another user (via UID)", 
-             * we need to find the endpoint associated with that UID.
-             * The new owner is simply the target_uid's process endpoint.
-             */
+            // Find the endpoint corresponding to the target UID
             r = get_endpoint_by_uid(target_uid, &target_endpt);
 
             if (r != OK) {
-                /* Target user is not running or invalid UID */
-                return EINVAL;
+                return ESRCH; // No such process/user
             }
-            
-            /* The *target* user now becomes the owner. */
-            secret_owner = target_endpt;
-            
+
+            // Set the new reader endpoint
+            secret_reader = target_endpt;
+
             return OK;
         }
 
         case SSREVOKE: {
-            /* SSREVOKE: _IO('S', 2) - No arguments, revoke ownership */
-            
-            /* Revoking ownership means setting the owner back to NONE. */
-            secret_owner = NONE;
-            secret_len = 0; /* Clear the secret upon revocation */
-
+            // Owner revokes read permission
+            secret_reader = 0;
             return OK;
         }
 
         default:
-            return EINVAL;
+            return ENOTTY;
     }
 }
 
-/* --- SEF Callbacks --- */
 
-static int sef_cb_lu_state_save(int state, int flags)
+/* SEF Callbacks */
+
+// Fix: Corrected signature from (int state, int flags) to (void)
+static void sef_cb_lu_state_save(void)
 {
-    /* The chardriver framework passes different arguments here, 
-     * but we use the standard SEF signature and UNUSED macros 
-     * for forward compatibility and to avoid compiler warnings.
-     */
-    UNUSED(state);
-    UNUSED(flags);
-
-    /* Save the current secret_owner and secret_len to persist across upgrades */
-    ds_publish_u32("secret_owner", secret_owner);
-    ds_publish_u32("secret_len", (u32_t)secret_len);
-    
-    /* We don't save the secret_data itself, as it's typically ephemeral. 
-     * If the secret needs to persist, it should be saved here.
-     * For this assignment, we'll assume it's lost on upgrade/restart.
-     */
-    
-    return OK;
+    // Fix: ds_publish_u32 requires 3 arguments (name, value, flags), added 0 for flags.
+    ds_publish_u32("secret_owner", secret_owner, 0);
+    ds_publish_u32("secret_reader", secret_reader, 0);
+    ds_publish_u32("secret_len", (u32_t)secret_len, 0);
 }
 
+// Fixed signature for sef_cb_init
 static int sef_cb_init(int type, sef_init_info_t *info)
 {
     UNUSED(info);
-    
-    /* On initialization (startup or restore after update) */
+
     if (type == SEF_INIT_FRESH) {
-        /* Fresh start */
-        secret_owner = NONE;
+        secret_owner = 0;
+        secret_reader = 0;
         secret_len = 0;
-        printf("SECRET: Initialized as a new secret device.\n");
     } else if (type == SEF_INIT_LU) {
-        /* Live Update: Restore state */
-        u32_t owner_u32, len_u32;
-        
-        if (ds_retrieve_u32("secret_owner", &owner_u32) == OK && 
-            ds_retrieve_u32("secret_len", &len_u32) == OK) {
-            secret_owner = (endpoint_t)owner_u32;
-            secret_len = (size_t)len_u32;
-            printf("SECRET: State restored from live update. Owner: %d, Length: %zu\n", 
-                secret_owner, secret_len);
-        } else {
-            /* Failed to restore, start fresh */
-            secret_owner = NONE;
-            secret_len = 0;
-            printf("SECRET: Failed to restore state, starting fresh.\n");
-        }
+        u32_t val;
+        int r;
+
+        r = ds_retrieve_u32("secret_owner", &val);
+        if (r == OK) secret_owner = (endpoint_t)val;
+
+        r = ds_retrieve_u32("secret_reader", &val);
+        if (r == OK) secret_reader = (endpoint_t)val;
+
+        r = ds_retrieve_u32("secret_len", &val);
+        if (r == OK) secret_len = (size_t)val;
     }
 
-    /* Announce we are up! */
+    // Announce we are up and running
     chardriver_announce();
-    
+
     return OK;
 }
 
+// Signal handler (for graceful termination)
+static int sef_cb_signal_handler(int signo)
+{
+    if (signo != SIGTERM) return SEF_OTHER_SIGNAL;
+
+    // Graceful termination
+    chardriver_terminate();
+    return OK;
+}
+
+// Local startup routine
 static void sef_local_startup(void)
 {
-    /* Register for live update state saving */
+    // Setup callbacks
     sef_setcb_lu_state_save(sef_cb_lu_state_save);
-    
-    /* Register for signal handling */
     sef_setcb_signal_handler(sef_cb_signal_handler);
-    
-    /* Announce the device name */
+
+    // Set name for debugging
     sef_dev_set_name("secret");
-    
-    /* Initialize the whole system */
+
+    // Initialize SEF (calls sef_cb_init)
     sef_init(sef_cb_init);
 }
 
-static int sef_cb_signal_handler(int signo)
-{
-    /* Only handle SIGTERM (shutdown) */
-    if (signo != SIGTERM) return 0;
-    
-    /* Clean shutdown procedure */
-    chardriver_terminate();
-    
-    return 1;
-}
-
+/* The main function of the Minix driver (renamed from main to test453main) */
 int test453main(void)
 {
-    /*
-     * This is the entry point for the driver.
-     * The chardriver_task function enters the main message loop.
-     * CD_TASK is defined in <minix/chardriver.h>.
-     */
+    // Startup SEF
     sef_local_startup();
-    
-    /* Run the main driver loop, listening for requests */
-    chardriver_task(&secret_tab, CD_TASK);
+
+    // Start the character driver task
+    // Fix: Using CD_DEV instead of the undeclared CD_TASK
+    chardriver_task(&secret_tab, CD_DEV);
 
     return OK;
 }
