@@ -164,7 +164,7 @@ static int secret_open(message *m_ptr)
 		/* 4. Check for read access (R_BIT) */
 		if (flags & R_BIT) {
 			if (ucred.uid != secret_global_state.owner_uid) {
-				/* Non-owner attempts to read result in EACCES */
+		/* Non-owner attempts to read result in EACCES */
 				return EACCES;
 			} else {
 				secret_global_state.read_opened = 1;
