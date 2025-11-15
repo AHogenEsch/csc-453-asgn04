@@ -108,7 +108,7 @@ static int secret_save_state(int state)
 		sizeof(secret_global_state), DSF_OVERWRITE);
 	
 	if (r != OK) {
-		printf("%s: ds_publish_mem failed: %d\n", SECRET_KEEPER_NAME, r);
+	printf("%s: ds_publish_mem failed: %d\n", SECRET_KEEPER_NAME, r);
 	} else {
 		printf("%s: State published to DS.\n", SECRET_KEEPER_NAME);
 	}
@@ -139,7 +139,7 @@ static int secret_open(message *m_ptr)
 	if (secret_global_state.owner_uid == INVAL_UID) {
 		/* Secret is EMPTY (Owned by nobody) */
 		if (flags & (R_BIT | W_BIT)) {
-			/* Any process may open for R or W. Owner becomes opener. */
+		/* Any process may open for R or W. Owner becomes opener. */
 			secret_global_state.owner_uid = ucred.uid;
 			secret_global_state.open_count++;
 			return OK;
@@ -242,7 +242,7 @@ static int secret_transfer(endpoint_t endpt, int opcode, u64_t position,\
 		return bytes_to_transfer;
 
 	} else if (opcode == DEV_GATHER_S) { /* Read (driver to user) */
-		/* Position is ignored as /dev/Secret is not seekable per PDF */
+	/* Position is ignored as /dev/Secret is not seekable per PDF */
 		size_t pos_offset = 0; 
 		
 		if (pos_offset >= secret_global_state.secret_len) {
