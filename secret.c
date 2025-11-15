@@ -245,10 +245,10 @@ static int secret_transfer(endpoint_t endpt, int opcode, u64_t position,
 
 	} else if (opcode == DEV_GATHER_S) { /* Read (driver to user) */
         
-        /* FIX: Cast the u64_t value directly to size_t. This resolves the 
-         * 'aggregate value' error by conforming to the required u64_t type 
-         * and avoiding any dereferencing of structured types. */
-        size_t pos_offset = (size_t)position; 
+        /* FIX: Cast to unsigned long long first to force scalar interpretation,
+         * resolving the "aggregate value" error caused by u64_t potentially 
+         * being structured on a 32-bit system. Then cast to size_t. */
+        size_t pos_offset = (size_t)(unsigned long long)position; 
 		
 		if (pos_offset >= secret_global_state.secret_len) {
 			return 0; /* EOF */
