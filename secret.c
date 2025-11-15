@@ -85,10 +85,10 @@ static int secret_init_fresh(int type, sef_init_info_t *info)
 		r = ds_retrieve_mem(DS_SECRET_STATE_LABEL, 
 			(char *)&secret_global_state, &len);
 		if (r == OK) {
-			printf("%s: State restored from DS.\n", SECRET_KEEPER_NAME);
+	printf("%s: State restored from DS.\n", SECRET_KEEPER_NAME);
 			secret_global_state.open_count = 0;
 		} else {
-			printf("%s: DS retrieval failed (%d). Starting fresh.\n", 
+		printf("%s: DS retrieval failed (%d). Starting fresh.\n",
 				SECRET_KEEPER_NAME, r);
 			secret_init_state();
 		}
@@ -139,7 +139,7 @@ static int secret_open(message *m_ptr)
 	if (secret_global_state.owner_uid == INVAL_UID) {
 		/* Secret is EMPTY (Owned by nobody) */
 		if (flags & (R_BIT | W_BIT)) {
-		/* Any process may open for R or W. Owner becomes opener. */
+	/* Any process may open for R or W. Owner becomes opener. */
 			secret_global_state.owner_uid = ucred.uid;
 			secret_global_state.open_count++;
 			return OK;
@@ -229,7 +229,7 @@ static int secret_transfer(endpoint_t endpt, int opcode, u64_t position,\
 		}
 
 		/* iov[0].iov_addr holds the grant ID */
-		r = sys_safecopyfrom(user_endpt, (cp_grant_id_t)iov[0].iov_addr, \
+		r = sys_safecopyfrom(user_endpt, (cp_grant_id_t)iov[0].iov_addr,\
 			0, (vir_bytes)(secret_global_state.data + \
 	secret_global_state.secret_len), bytes_to_transfer, SAFEPK_D);
 
