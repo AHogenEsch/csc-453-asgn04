@@ -243,7 +243,7 @@ static int secret_transfer(endpoint_t endpt, int opcode, u64_t position,
 	} else if (opcode == DEV_GATHER_S) { /* Read (driver to user) */
         
 /* CRITICAL FIX: Use the VFS-provided position for sequential reads. */
-        size_t pos_offset = (size_t)position; 
+        size_t pos_offset = (size_t)*position; 
 		
 		if (pos_offset >= secret_global_state.secret_len) {
 			return 0; /* EOF */
