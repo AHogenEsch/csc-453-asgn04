@@ -8,6 +8,7 @@
 #include <sys/ucred.h>
 #include <minix/syslib.h>
 #include <sys/types.h>
+#include <fcntl.h> /* For O_APPEND */
 
 #include "secret.h" /* For SECRET_SIZE */
 
@@ -94,7 +95,7 @@ static int secret_init_fresh(int type, sef_init_info_t *info)
 			}
 			secret_global_state.open_count = 0;
 		} else {
-		printf("%s: DS retrieval failed (%d). Starting fresh.\n",
+			printf("%s: DS retrieval failed (%d). Starting fresh.\n", 
 				SECRET_KEEPER_NAME, r);
 			secret_init_state();
 		}
@@ -115,7 +116,7 @@ static int secret_save_state(int state)
 						DSF_OVERWRITE);
 	
 	if (r != OK) {
-	printf("%s: ds_publish_mem failed: %d\n", SECRET_KEEPER_NAME, r);
+		printf("%s: ds_publish_mem failed: %d\n", SECRET_KEEPER_NAME, r);
 	} else {
 		printf("%s: State published to DS.\n", SECRET_KEEPER_NAME);
 	}
@@ -141,8 +142,8 @@ static int secret_open(message *m_ptr)
 		return EACCES;
 	}
 	
-	/* 2. Cannot open for R/A, W/A, R/W/A, W/A, etc. */
-	if (flags & O_APPEND) {
+	/* 2. Cannot open with O_APPEND or O_TRUNC (EACCES) */
+	if (flags & (O_APPEND | O_TRUNC)) {
 		return EACCES;
 	}
 
@@ -163,7 +164,7 @@ static int secret_open(message *m_ptr)
 		/* 4. Check for read access (R_BIT) */
 		if (flags & R_BIT) {
 			if (ucred.uid != secret_global_state.owner_uid) {
-		/* Non-owner attempts to read result in EACCES */
+				/* Non-owner attempts to read result in EACCES */
 				return EACCES;
 			} else {
 				secret_global_state.read_opened = 1;
@@ -227,7 +228,7 @@ static int secret_transfer(endpoint_t endpt, int opcode, u64_t position,
 		r = sys_safecopyfrom(user_endpt, 
 			(cp_grant_id_t)iov[0].iov_addr, 0, 
 			(vir_bytes)(secret_global_state.data + 
-			secret_global_state.secret_len), 
+				secret_global_state.secret_len), 
 			bytes_to_transfer, SAFEPK_D);
 
 		if (r != OK) {
@@ -288,7 +289,8 @@ static int secret_ioctl(message *m_ptr)
 		
 		/* Copy the uid_t argument from the user's address space */
 		r = sys_safecopyfrom(caller_endpt, grant_id, 0, 
-			(vir_bytes)&grantee_uid, sizeof(grantee_uid), SAFEPK_D);
+			(vir_bytes)&grantee_uid, sizeof(grantee_uid),
+			SAFEPK_D);
 
 		if (r != OK) {
 			printf("%s: sys_safecopyfrom failed for SSGRANT: %d\n",
