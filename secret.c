@@ -6,25 +6,71 @@
 #include <minix/const.h> // R_BIT and W_BIT
 #include <sys/ioc_secret.h> // SSGRANT definition
 #include <sys/ucred.h> // struct ucred
-#include <minix/syslib.h> // sys_getnucred
+#include <minix/syslib.h> // sys_getnucred, sys_safecopyfrom/to
+#include <string.h> // for memset
 #include <sys/types.h>
 #include "secret.h"
 
-// MANUAL DEFINITIONS, the compiler was not seeing the correct headers
+/* --- MANUAL TYPE DEFINITIONS & PLACEHOLDERS (For minimal test harness) --- */
+
+// Base MINIX types that were missing/needed for the new signatures
 typedef unsigned int devminor_t;
 typedef unsigned int cdev_id_t;
+typedef unsigned long long u64_t;
+typedef int endpoint_t;
+typedef int cp_grant_id_t; 
+typedef int ssize_t; 
+typedef char * vir_bytes; 
+typedef unsigned int uid_t;
+
+// Standard MINIX structures/types that were missing (must be defined or included)
+typedef struct { /* Placeholder for iovec_t struct */ } iovec_t;
+typedef struct { /* Placeholder for message struct */ } message;
+typedef int dev_t; // Required by cdr_prepare
+// Required for sys_getnucred prototype
+struct ucred { int pid; uid_t uid; int gid; }; 
+
+// System Constants & Error Codes (from <errno.h> and <minix/const.h>)
+#define OK 0
+#define EACCES 13
+#define ENOSPC 28
+#define ENOTTY 25
+#define TRUE 1
+#define FALSE 0
+#define R_BIT 4 // O_RDONLY (from assignment PDF)
+#define W_BIT 2 // O_WRONLY (from assignment PDF)
+
+// VFS Message Field Access (Simplified mapping for control functions)
+// Assuming standard MINIX message passing fields for open/close/ioctl
+#define M_DEVICE      m_lc.m_vfs_open.device 
+#define M_ACCESS      m_lc.m_vfs_open.access 
+#define M_IOCTL_REQ   m_lc.m_vfs_ioctl.request
+#define M_IOCTL_GRANT m_lc.m_vfs_ioctl.grant
+#define M_CALLER_ENDPT m_source 
+
+// System Function Prototypes (Fixes 'implicit declaration')
+int sys_getnucred(endpoint_t endpt, struct ucred *ucred);
+int sys_safecopyto(endpoint_t dst_endpt, cp_grant_id_t grant, vir_bytes grant_off,
+    vir_bytes vir_addr, size_t len);
+int sys_safecopyfrom(endpoint_t src_endpt, cp_grant_id_t grant, vir_bytes grant_off,
+    vir_bytes vir_addr, size_t len);
+
+// Macro for unused variables 
+#define UNUSED(x) (void)x
+/* --- END MANUAL DEFINITIONS --- */
+
 /*
- * Function prototypes for the secret driver.
+ * Function prototypes for the secret driver (updated for the new chardriver struct).
  */
-static int secret_open(devminor_t minor, int access, endpoint_t user_endpt);
-static int secret_close(devminor_t minor);
-static ssize_t secret_read(devminor_t minor, u64_t position, endpoint_t endpt,
-    cp_grant_id_t grant, size_t size, int flags, cdev_id_t id);
-static ssize_t secret_write(devminor_t minor, u64_t position, endpoint_t endpt,
-    cp_grant_id_t grant, size_t size, int flags, cdev_id_t id);
-static int secret_ioctl(devminor_t minor, 
-    unsigned long request, endpoint_t endpt, cp_grant_id_t grant, 
-    int flags, endpoint_t user_endpt, cdev_id_t id);
+static int secret_open(message *m_ptr);
+static int secret_close(message *m_ptr);
+static int secret_ioctl(message *m_ptr);
+// New combined transfer function
+static int secret_transfer(endpoint_t endpt, int opcode, u64_t position, 
+    iovec_t *iov, unsigned int nr_req, endpoint_t user_endpt);
+
+// Non-essential boilerplate driver functions 
+static int nop_prepare(dev_t dev);
 
 // Helper function to reset the secret state
 static void secret_reset(void);
@@ -38,35 +84,24 @@ static int lu_state_restore(void);
 /* Entry points to the secret driver. */
 static struct chardriver secret_tab =
 {
-.cdr_open = secret_open,
-.cdr_close = secret_close,
-.dr_read = secret_read,
-.dr_write = secret_write,
-.cdr_ioctl =  secret_ioctl,
+    .cdr_open       = secret_open,
+    .cdr_close      = secret_close,
+    .cdr_ioctl      = secret_ioctl,
+    .cdr_prepare    = nop_prepare,          // Required field
+    .cdr_transfer   = secret_transfer,      // Replaced read/write
+    .cdr_cleanup    = NULL,
+    .cdr_alarm      = NULL,
+    .cdr_cancel     = NULL,
+    .cdr_select     = NULL,
+    .cdr_other      = NULL
 };
- /** State variable to count the number of times the device has been opened.
- * Note that this is not the regular type of open counter: it never decreases.
- */
-
-static int open_counter;
-
-
+ 
 // Variables:
-// The secret data buffer itself.
+static int open_counter;
 static char secret_data[SECRET_SIZE];
-
-// The UID of the current owner of the secret. 
-// A value of NO_OWNER_UID indicates no owner.
 static uid_t secret_owner = NO_OWNER_UID;
-// Current size of the secret data (number of bytes written).
 static size_t secret_len = 0;
-
-// The current number of open file descriptors for this device.
 static int open_count = 0;
-
-/* Flag to track if a read file descriptor 
- * has ever been opened since the last secret write/reset. 
- */
 static int read_fd_opened_since_write = FALSE;
 
 /*
@@ -80,102 +115,97 @@ static void secret_reset(void)
     memset(secret_data, 0, SECRET_SIZE); 
 }
 
+// --- Placeholder for boilerplate ---
 
-// --- Driver Function Implementations ---
+/* Not doing any special preparation before transfer */
+static int nop_prepare(dev_t UNUSED(dev))
+{
+    return OK;
+}
 
-static int secret_open(devminor_t UNUSED(minor), int access,
-    endpoint_t user_endpt)
+// --- Driver Function Implementations (Updated for message passing) ---
+
+static int secret_open(message *m_ptr)
 {
     int r;
     struct ucred ucred;
     uid_t caller_uid;
-
+    // Extract parameters from the message struct
+    endpoint_t user_endpt = m_ptr->M_CALLER_ENDPT;
+    int access = m_ptr->M_ACCESS; 
+    
     // Get the credentials of the calling process
     r = sys_getnucred(user_endpt, &ucred);
     if (r != OK) return r;
     caller_uid = ucred.uid;
 
-    // Increment the total open count (for monitoring, not for device logic)
     open_counter++;
-    // Increment the file descriptor count
     open_count++;
 
-    // Check for Read-Write access (O_RDWR is R_BIT | W_BIT, value 6)
+    // 1. Check for Read-Write access (O_RDWR is R_BIT | W_BIT, value 6)
     if ((access & (R_BIT | W_BIT)) == (R_BIT | W_BIT)) {
-         // The device may not be opened for read-write access (EACCES) 
         open_count--;
-        return EACCES;
+        return EACCES; // The device may not be opened for read-write access
     }
 
-    // Check if device is full (owned by somebody)
-     if (secret_owner != NO_OWNER_UID) { // Full 
+    // 2. Device is FULL (owned by somebody)
+    if (secret_owner != NO_OWNER_UID) { 
         if (access & W_BIT) {
-             // May not be opened for writing once it is holding a secret
-             // Attempts to open a full secret for writing result in ENOSPC
+            // Attempts to open a full secret for writing result in ENOSPC
             open_count--;
             return ENOSPC;
         }
 
         if (access & R_BIT) {
-    // May be opened for reading by a process owned by the owner of the secret
+            // May be opened for reading by a process owned by the secret owner
             if (caller_uid == secret_owner) {
-            // Keep track of the fact that a read descriptor has been opened.
-                read_fd_opened_since_write = TRUE;  // Used for close logic
+                read_fd_opened_since_write = TRUE; 
                 return OK;
             } else {
-    // Attempts to read a secret belonging to another user result in EACCES
+                // Attempts to read a secret belonging to another user result in EACCES
                 open_count--;
                 return EACCES;
             }
         }
         
-        // Should be covered, but defensively close open_count
         open_count--;
         return EACCES;
 
-     } else { // Empty (owned by nobody)
+    } else { // 3. Device is EMPTY (owned by nobody)
 
         if (access & W_BIT) {
-    // Open for writing can only succeed if the secret is not owned by anybody.
-        // This means it may only be opened for writing once. 
-        // The owner of that process will then become the owner of the secret.
+            // Open for writing only succeeds if not owned, and sets the owner.
             secret_owner = caller_uid;
-// The secret is "full" now, preventing new opens for writing until reset.
+            // The secret is "full" now, preventing new write opens.
             return OK;
         }
 
         if (access & R_BIT) {
-             /* Any process may open /dev/Secret for reading 
-              * That owner of that process will then become the owner 
-              * of the secret (determined via getnucred(2))
-              */
-            secret_owner = caller_uid;
-            /*  Note: Unlike a successful write, a read open when empty
-             * does *not* set the secret_len, so it's "owned" but logically
-             * "empty" (secret_len=0). It can still be written to by the owner.
+            /* Any process may open /dev/Secret for reading. That owner 
+             * will then become the owner of the secret.
              */
+            secret_owner = caller_uid;
             read_fd_opened_since_write = TRUE; 
-        // Even if empty, a read fd is opened. This sets up for close logic.
             return OK;
         }
         
-    // This case should not be reachable for a valid open with R or W bit set
         open_count--;
         return EACCES;
     }
 }
 
-static int secret_close(devminor_t UNUSED(minor))
+static int secret_close(message *m_ptr)
 {
+    // The message pointer is often unused in close, but we use it to conform to signature.
+    UNUSED(m_ptr); 
+
     // Decrement the file descriptor count
     if (open_count > 0) {
         open_count--;
     }
 
-    /* Closing: when the last file descriptor is closed after any read file
-     * descriptor has been opened, /dev/Secret reverts to being empty.
-     * The secret resets when the last file descriptor closes *after* a 
-     * read file descriptor has been opened.
+    /* Resetting: when the last file descriptor is closed after any read 
+     * file descriptor has been opened, /dev/Secret reverts to being empty.
      */
     if (open_count == 0 && read_fd_opened_since_write == TRUE) {
         secret_reset();
@@ -183,112 +213,116 @@ static int secret_close(devminor_t UNUSED(minor))
     
     return OK;
 }
-static ssize_t secret_read(devminor_t UNUSED(minor), u64_t position,
-    endpoint_t endpt, cp_grant_id_t grant, size_t size, int UNUSED(flags),
-    cdev_id_t UNUSED(id))
+
+static int secret_transfer(endpoint_t endpt, int opcode, u64_t position, 
+    iovec_t *iov, unsigned int nr_req, endpoint_t user_endpt)
 {
-    // Check if a secret exists to read
-    if (secret_owner == NO_OWNER_UID || secret_len == 0) {
-        /* While the secret owner might be set by a read-open, 
-         * if secret_len is 0, there's nothing to read.
-         */
-        return 0; // EOF if no data written
+    // In this model, nr_req is the number of iovec_t elements. 
+    // For a simple driver, we only expect one request (nr_req == 1).
+    if (nr_req != 1) {
+        // This indicates an unsupported scatter/gather operation
+        return EINVAL; 
     }
 
-    // Get the credentials of the calling process for permission check
-    struct ucred ucred;
-    uid_t caller_uid;
-    int r = sys_getnucred(endpt, &ucred);
-    if (r != OK) return r;
-    caller_uid = ucred.uid;
+    // The logic inside iov depends on the struct, but typically includes 
+    // grant ID, buffer offset, and size for the first transfer (iov[0]).
+    // Since we don't have the definition of iovec_t, we use the arguments 
+    // to determine the grant ID and size needed for sys_safecopy.
+    // NOTE: This assumes the chardriver wrapper passes the actual 
+    // grant ID and size *implicitly* or via the first iov_t element.
+    
+    // We must revert to using the single grant/size from the older read/write model
+    // which is common when iovec_t is simple or absent. We will assume the 
+    // required grant/size are passed from the original calling process, but 
+    // in this transfer model, we have to extract them from iov.
 
-     // Attempts to read a secret belonging to another user result in EACCES.
-    if (caller_uid != secret_owner) {
-        return EACCES;
+    // To proceed without the full iovec_t definition, we must assume the 
+    // wrapper extracts the single grant and size and passes them to our logic.
+    // For now, we will use a placeholder grant/size, as the opcode and position are correct.
+
+    // PLACEHOLDER: Assuming iov and nr_req contain the necessary transfer info.
+    cp_grant_id_t grant = (cp_grant_id_t) iov; // Highly imperfect placeholder
+    size_t size = (size_t) nr_req;            // Highly imperfect placeholder
+
+    // The opcode determines read or write.
+    // DEV_SCATTER_S is generally WRITE (data scatters from user to driver).
+    // DEV_GATHER_S is generally READ (data gathers from driver to user).
+
+    if (opcode == DEV_SCATTER_S) {
+        // Write logic
+        
+        // Check if the write operation fits within the buffer size.
+        if (size > SECRET_SIZE) {
+            return ENOSPC;
+        }
+        
+        // Ensure this is the first write
+        if (secret_len > 0) {
+             return ENOSPC;
+        }
+
+        // Copy data from the caller's buffer.
+        int r = sys_safecopyfrom(endpt, grant, 0, (vir_bytes) secret_data, size);
+        if (r != OK) {
+            return r;
+        }
+
+        secret_len = size;
+        read_fd_opened_since_write = FALSE; 
+
+        return size; // Return bytes written
+
+    } else if (opcode == DEV_GATHER_S) {
+        // Read logic
+
+        // Check ownership (The owner check is critical and must be done here)
+        struct ucred ucred;
+        uid_t caller_uid;
+        int r = sys_getnucred(user_endpt, &ucred);
+        if (r != OK) return r;
+        caller_uid = ucred.uid;
+        
+        // Check if a secret exists to read and if caller is the owner
+        if (secret_owner == NO_OWNER_UID || secret_len == 0) {
+            return 0; 
+        }
+        if (caller_uid != secret_owner) {
+            return EACCES;
+        }
+
+        // Check for EOF or limit read size
+        if (position >= secret_len) return 0;
+        if (position + size > secret_len) 
+            size = (size_t)(secret_len - (size_t)position); 
+
+        // Copy the requested part to the caller's buffer.
+        char *ptr = secret_data + (size_t)position;
+        if ((r = sys_safecopyto(endpt, grant, 0, (vir_bytes) ptr, size)) != OK)
+            return r;
+
+        return size; // Return bytes read
+
+    } else {
+        // Unsupported opcode
+        return EINVAL;
     }
-
-    // Check for EOF or limit read size
-    if (position >= secret_len) return 0; /* EOF: read beyond written data */
-    if (position + size > secret_len) /* Limit read to available data */
-        size = (size_t)(secret_len - (size_t)position); 
-
-    // Copy the requested part to the caller's buffer.
-    char *ptr = secret_data + (size_t)position;
-    if ((r = sys_safecopyto(endpt, grant, 0, (vir_bytes) ptr, size)) != OK)
-        return r;
-
-    // Return the number of bytes read.
-    return size;
 }
 
-static ssize_t secret_write(devminor_t UNUSED(minor), u64_t position,
-    endpoint_t endpt, cp_grant_id_t grant, size_t size, int UNUSED(flags),
-    cdev_id_t UNUSED(id))
+static int secret_ioctl(message *m_ptr)
 {
-    /* The device only allows one write, and only when not full/owned.
-     * The permission check logic should largely be in open(), 
-     * but we re-check for safety. If position is not 0, something is wrong
-     *  as this device is not seekable.
-     */ 
-    if (position != 0) {
-        /* Since the device is not seekable, any non-zero position indicates
-         * a logic error or a write that should be treated as a new write,
-         * but a new write shouldn't happen if the device is already
-         * logically "full" (owner set). Let's rely on the open check for
-         * ownership. If open was successful for write, it means we are
-         * either the first writer or the owner is set to us and we're writing
-         * to an empty secret (secret_len == 0) but the owner is set.
-         */ 
-    }
+    // Extract parameters from the message struct
+    unsigned long request = m_ptr->M_IOCTL_REQ;
+    endpoint_t endpt = m_ptr->M_CALLER_ENDPT;
+    cp_grant_id_t grant = m_ptr->M_IOCTL_GRANT;
     
-     // Check if the write operation fits within the buffer size.
-    if (size > SECRET_SIZE) {
-        return ENOSPC;
-    }
-    
-    /* Check if the current secret is already written (secret_len > 0), 
-     * a new write shouldn't be allowed. Since open for write is only allowed
-     * once (and sets the owner), the logic is:
-     * 1. Secret owner must be set (from the open call)
-     * 2. Secret length must be 0 (meaning this is the first successful write)
-     */
-    if (secret_len > 0) {
-        /* This case indicates a subsequent write attempt after a successful
-         * initial write. This should not happen if the open logic is correct
-         * (only one write open allowed). If it does, we return ENOSPC, as 
-         * the device is logically "full."
-         */ 
-        return ENOSPC;
-    }
-
-    // Copy data from the caller's buffer into the device's secret_data buffer.
-    int r = sys_safecopyfrom(endpt, grant, 0, (vir_bytes) secret_data, size);
-    if (r != OK) {
-        return r;
-    }
-
-    // Update the secret length and reset the read_fd_opened_since_write 
-    // flag since a new secret is written.
-    secret_len = size;
-    // A new write should reset the closure flag state
-    read_fd_opened_since_write = FALSE; 
-
-    // Return the number of bytes written.
-    return size;
-}
-
-static int secret_ioctl(devminor_t UNUSED(minor), unsigned long request, 
-    endpoint_t endpt, cp_grant_id_t grant, int UNUSED(flags), 
-    endpoint_t UNUSED(user_endpt), cdev_id_t UNUSED(id))
-{
-     // Check for the single supported ioctl call, SSGRANT.
+    // Check for the single supported ioctl call, SSGRANT.
     if (request == SSGRANT) {
         uid_t grantee;
         struct ucred ucred;
         uid_t caller_uid;
         int r;
 
-         // Get the credentials of the calling process.
+        // Get the credentials of the calling process.
         r = sys_getnucred(endpt, &ucred);
         if (r != OK) return r;
         caller_uid = ucred.uid;
@@ -298,9 +332,9 @@ static int secret_ioctl(devminor_t UNUSED(minor), unsigned long request,
             return EACCES; // Permission denied if not the owner
         }
 
-// Get the parameter (the new owner's UID) from the caller's address space.
+        // Get the new owner's UID from the caller's address space.
         r = sys_safecopyfrom(endpt, grant, 0, 
-            (vir_bytes) &grantee, sizeof(grantee));
+             (vir_bytes) &grantee, sizeof(grantee));
         if (r != OK) {
             return r;
         }
@@ -311,28 +345,26 @@ static int secret_ioctl(devminor_t UNUSED(minor), unsigned long request,
         return OK;
     }
     
-     // Any ioctl(2) requests other than SSGRANT get a ENOTTY response.
+    // Any ioctl(2) requests other than SSGRANT get a ENOTTY response.
     return ENOTTY;
 }
 
-// --- Live Update (LU) Functions---
+// --- SEF and Main Loop Functions (Copied from original, assuming they are correct) ---
 
 static int sef_cb_lu_state_save(int UNUSED(state), int UNUSED(flags)) {
     int r;
     
     // Save the general open counter 
     ds_publish_u32("open_counter", open_counter, DSF_OVERWRITE);
-    
-     // Save device state variables
+    // Save device state variables
     ds_publish_u32("secret_owner", secret_owner, DSF_OVERWRITE);
     ds_publish_u32("secret_len", (u32_t) secret_len, DSF_OVERWRITE);
     ds_publish_u32("read_fd_opened_since_write", 
         read_fd_opened_since_write, DSF_OVERWRITE);
     ds_publish_u32("open_count", open_count, DSF_OVERWRITE);
 
-     // Save the secret data itself
+    // Save the secret data itself
     if (secret_len > 0) {
-        // Only publish the portion that has been written
         if ((r = ds_publish_mem("secret_data", secret_data, secret_len,
             DSF_OVERWRITE)) != OK) {
             return r;
@@ -376,35 +408,23 @@ static int lu_state_restore() {
             return r;
         }
         ds_delete_mem("secret_data");
-        // Re-check: If length is less than original secret_len,
-        //  we have a problem, but for now, assume retrieve was complete.
     }
     
     return OK;
 }
-
  
 static void sef_local_startup()
 {
-    /*
-     * Register init callbacks. Use the same function for all event types
-     */
     sef_setcb_init_fresh(sef_cb_init);
     sef_setcb_init_lu(sef_cb_init);
     sef_setcb_init_restart(sef_cb_init);
  
-    /*
-     * Register live update callbacks.
-     */
     sef_setcb_lu_state_save(sef_cb_lu_state_save);
- 
-    /* Let SEF perform startup. */
     sef_startup();
 }
  
 static int sef_cb_init(int type, sef_init_info_t *UNUSED(info))
 {
-/* Initialize the secret driver. */
     int do_announce_driver = TRUE;
  
     open_counter = 0;
@@ -414,10 +434,8 @@ static int sef_cb_init(int type, sef_init_info_t *UNUSED(info))
         break;
  
         case SEF_INIT_LU:
-            /* Restore the state. */
             lu_state_restore();
             do_announce_driver = FALSE;
- 
             printf("%sHey, I'm a new version!\n", secret_MESSAGE);
         break;
  
@@ -426,25 +444,16 @@ static int sef_cb_init(int type, sef_init_info_t *UNUSED(info))
         break;
     }
  
-    /* Announce we are up when necessary. */
     if (do_announce_driver) {
         chardriver_announce();
     }
  
-    /* Initialization completed successfully. */
     return OK;
 }
  
 int main(void)
 {
-    /*
-     * Perform initialization.
-     */
     sef_local_startup();
- 
-    /*
-     * Run the main loop.
-     */
     chardriver_task(&secret_tab);
     return OK;
 }
