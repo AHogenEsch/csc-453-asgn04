@@ -105,7 +105,7 @@ static int secret_save_state(int state)
 	int r;
 	
 	r = ds_publish_mem(DS_SECRET_STATE_LABEL, &secret_global_state, \
-						sizeof(secret_global_state), DSF_OVERWRITE);
+		sizeof(secret_global_state), DSF_OVERWRITE);
 	
 	if (r != OK) {
 		printf("%s: ds_publish_mem failed: %d\n", SECRET_KEEPER_NAME, r);
@@ -127,7 +127,7 @@ static int secret_open(message *m_ptr)
 	r = getnucred(caller_endpt, &ucred);
 	if (r != OK) {
 		printf("%s: Failed to get creds for %d: %d\n", 
-				SECRET_KEEPER_NAME, caller_endpt, r);
+        SECRET_KEEPER_NAME, caller_endpt, r);
 		return EGENERIC;
 	}
 
