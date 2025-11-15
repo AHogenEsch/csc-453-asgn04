@@ -18,6 +18,9 @@
 #define SSREVOKE _IO('S', 2) /* Revoke ownership of the secret from a reader */
 #endif
 
+typedef unsigned int devminor_t;
+typedef unsigned int cdev_id_t; 
+
 /* State of the device */
 static char secret_data[SECRET_SIZE];
 static size_t secret_len = 0;
@@ -29,7 +32,7 @@ static endpoint_t secret_reader = 0;
 /* Function Prototypes for the character driver table */
 // Removed 'static' from nop_prepare to resolve conflict with pln.h prototype
 struct device *nop_prepare(int device);
-static void nop_cleanup(int minor);
+void nop_cleanup(int minor);
 static int secret_open(devminor_t minor, int flags);
 static int secret_close(devminor_t minor);
 static int secret_ioctl(devminor_t minor, unsigned long request, endpoint_t user_endpt, cp_grant_id_t grant);
