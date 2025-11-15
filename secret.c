@@ -291,7 +291,7 @@ static int secret_ioctl(message *m_ptr)
 		
 		/* Copy the uid_t argument from the user's address space */
 		r = sys_safecopyfrom(caller_endpt, grant_id, 0, \
-			(vir_bytes)&grantee_uid, sizeof(grantee_uid), SAFEPK_D);
+		(vir_bytes)&grantee_uid, sizeof(grantee_uid), SAFEPK_D);
 
 		if (r != OK) {
 			printf("%s: sys_safecopyfrom failed for SSGRANT: %d\n",\
