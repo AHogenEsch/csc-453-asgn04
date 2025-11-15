@@ -13,12 +13,6 @@
 #include <errno.h>
 #include <lib.h>
 
-/*
- * Note: All conflicting type definitions, struct definitions, and macro definitions
- * were removed from this file. These are provided by the system headers (e.g., pln.h)
- * included by the test harness and should not be redefined here.
- */
-
 /* Max size of the secret buffer (8KB) */
 #define MAX_SECRET_SIZE 8192 
 /* IOCTL command to grant read access to a specific user */
