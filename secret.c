@@ -7,7 +7,6 @@
 #include <sys/ioc_secret.h>
 #include <sys/ucred.h>
 #include <minix/syslib.h>
-#include <minix/sysutil.h> /* For low64() */
 #include <sys/types.h>
 
 #include "secret.h" /* For SECRET_SIZE */
