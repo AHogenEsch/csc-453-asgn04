@@ -42,7 +42,10 @@ static struct secret_state secret_global_state;
 static int secret_open(message *m_ptr);
 static int secret_close(message *m_ptr);
 static struct device *secret_prepare(dev_t device);
-static int secret_transfer(endpoint_t endpt, int opcode, loff_t *position,
+/* FIX: Using u64_t by value as requested. This resolves the 'aggregate value'
+ * error by avoiding pointer dereferencing, although it may cause a warning 
+ * due to incompatible pointer type with the chardriver framework. */
+static int secret_transfer(endpoint_t endpt, int opcode, u64_t position,
 	iovec_t *iov, unsigned int nr_req, endpoint_t user_endpt);
 static int secret_ioctl(message *m_ptr);
 
@@ -95,7 +98,7 @@ static int secret_init_fresh(int type, sef_init_info_t *info)
 			}
 			secret_global_state.open_count = 0;
 		} else {
-		printf("%s: DS retrieval failed (%d). Starting fresh.\n", 
+			printf("%s: DS retrieval failed (%d). Starting fresh.\n", 
 				SECRET_KEEPER_NAME, r);
 			secret_init_state();
 		}
@@ -111,12 +114,12 @@ static int secret_save_state(int state)
 {
 	int r;
 	
-	r = ds_publish_mem(DS_SECRET_STATE_LABEL, &secret_global_state,
-		sizeof(secret_global_state), 
-		DSF_OVERWRITE);
+	r = ds_publish_mem(DS_SECRET_STATE_LABEL, &secret_global_state, 
+						sizeof(secret_global_state), 
+						DSF_OVERWRITE);
 	
 	if (r != OK) {
-	printf("%s: ds_publish_mem failed: %d\n", SECRET_KEEPER_NAME, r);
+		printf("%s: ds_publish_mem failed: %d\n", SECRET_KEEPER_NAME, r);
 	} else {
 		printf("%s: State published to DS.\n", SECRET_KEEPER_NAME);
 	}
@@ -184,7 +187,7 @@ static int secret_close(message *m_ptr)
 		secret_global_state.open_count--;
 	}
 
-/* Reset secret if last FD closed and a read was ever attempted. */
+	/* Reset secret if last FD closed and a read was ever attempted. */
 	if (secret_global_state.open_count == 0 && 
 		secret_global_state.read_opened == 1) {
 		secret_init_state();
@@ -206,8 +209,7 @@ static struct device *secret_prepare(dev_t device)
 }
 
 /* Transfer callback. Handles safe copy in (write) and out (read). */
-/* FIX: Updated signature to take 'loff_t *position'. */
-static int secret_transfer(endpoint_t endpt, int opcode, loff_t *position,
+static int secret_transfer(endpoint_t endpt, int opcode, u64_t position,
 	iovec_t *iov, unsigned int nr_req, endpoint_t user_endpt)
 {
 	size_t bytes_left, bytes_to_transfer;
@@ -219,7 +221,7 @@ static int secret_transfer(endpoint_t endpt, int opcode, loff_t *position,
 	
 	if (opcode == DEV_SCATTER_S) { /* Write (user to driver) */
         
-/* Device is not seekable. Writes always append to current secret_len. */
+        /* Device is not seekable. Writes always append to current secret_len. */
 		bytes_left = SECRET_SIZE - secret_global_state.secret_len;
 		bytes_to_transfer = MIN(iov[0].iov_size, bytes_left);
 
@@ -243,8 +245,10 @@ static int secret_transfer(endpoint_t endpt, int opcode, loff_t *position,
 
 	} else if (opcode == DEV_GATHER_S) { /* Read (driver to user) */
         
-        /* dereferencing the loff_t * is now valid and castable to size_t. */
-        size_t pos_offset = (size_t)*position; 
+        /* FIX: Cast the u64_t value directly to size_t. This resolves the 
+         * 'aggregate value' error by conforming to the required u64_t type 
+         * and avoiding any dereferencing of structured types. */
+        size_t pos_offset = (size_t)position; 
 		
 		if (pos_offset >= secret_global_state.secret_len) {
 			return 0; /* EOF */
@@ -291,13 +295,13 @@ static int secret_ioctl(message *m_ptr)
 			return EACCES;
 		}
 		
-/* Copy the uid_t argument from the user's address space */
+		/* Copy the uid_t argument from the user's address space */
 		r = sys_safecopyfrom(caller_endpt, grant_id, 0, 
 			(vir_bytes)&grantee_uid, sizeof(grantee_uid), 
 			SAFEPK_D);
 
 		if (r != OK) {
-	printf("%s: sys_safecopyfrom failed for SSGRANT: %d\n",
+			printf("%s: sys_safecopyfrom failed for SSGRANT: %d\n",
 				SECRET_KEEPER_NAME, r);
 			return EFAULT;
 		}
