@@ -95,7 +95,7 @@ static int secret_init_fresh(int type, sef_init_info_t *info)
 			}
 			secret_global_state.open_count = 0;
 		} else {
-			printf("%s: DS retrieval failed (%d). Starting fresh.\n", 
+		printf("%s: DS retrieval failed (%d). Starting fresh.\n",
 				SECRET_KEEPER_NAME, r);
 			secret_init_state();
 		}
@@ -111,12 +111,12 @@ static int secret_save_state(int state)
 {
 	int r;
 	
-	r = ds_publish_mem(DS_SECRET_STATE_LABEL, &secret_global_state, 
-						sizeof(secret_global_state), 
+	r = ds_publish_mem(DS_SECRET_STATE_LABEL, &secret_global_state,
+						sizeof(secret_global_state),
 						DSF_OVERWRITE);
 	
 	if (r != OK) {
-		printf("%s: ds_publish_mem failed: %d\n", SECRET_KEEPER_NAME, r);
+	printf("%s: ds_publish_mem failed: %d\n", SECRET_KEEPER_NAME, r);
 	} else {
 		printf("%s: State published to DS.\n", SECRET_KEEPER_NAME);
 	}
@@ -287,13 +287,13 @@ static int secret_ioctl(message *m_ptr)
 			return EACCES;
 		}
 		
-		/* Copy the uid_t argument from the user's address space */
+	/* Copy the uid_t argument from the user's address space */
 		r = sys_safecopyfrom(caller_endpt, grant_id, 0, 
 			(vir_bytes)&grantee_uid, sizeof(grantee_uid),
 			SAFEPK_D);
 
 		if (r != OK) {
-			printf("%s: sys_safecopyfrom failed for SSGRANT: %d\n",
+		printf("%s: sys_safecopyfrom failed for SSGRANT: %d\n",
 				SECRET_KEEPER_NAME, r);
 			return EFAULT;
 		}
