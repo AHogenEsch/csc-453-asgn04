@@ -8,8 +8,6 @@
 #include <sys/ucred.h> // struct ucred
 #include <minix/syslib.h> // sys_getnucred (or getnucred based on pln.h)
 #include <sys/types.h>
-#include <minix/sef.h> // For SEF functions
-#include <signal.h> // For SIGTERM
 
 #include "secret.h" // For SECRET_SIZE
 
