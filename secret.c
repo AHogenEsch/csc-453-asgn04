@@ -11,15 +11,14 @@
 
 #include "secret.h" /* For SECRET_SIZE */
 
-
 /* Memory segment for safe copy operations. 0 is the data segment. */
 #define SAFEPK_D 0
-
 /* DS label for storing driver state for Live Update */
 #define DS_SECRET_STATE_LABEL "secret_keeper_state"
-
 /* Driver name string */
 #define SECRET_KEEPER_NAME "secret"
+/* Name string for announcements */
+#define SECRET_ANNOUNCE_NAME "The Secret Safe"
 
 /* Global state structure for /dev/Secret. */
 struct secret_state {
@@ -42,7 +41,7 @@ static struct secret_state secret_global_state;
 static int secret_open(message *m_ptr);
 static int secret_close(message *m_ptr);
 static struct device *secret_prepare(dev_t device);
-static int secret_transfer(endpoint_t endpt, int opcode, u64_t position,\
+static int secret_transfer(endpoint_t endpt, int opcode, u64_t position,
 	iovec_t *iov, unsigned int nr_req, endpoint_t user_endpt);
 static int secret_ioctl(message *m_ptr);
 
@@ -81,11 +80,18 @@ static int secret_init_fresh(int type, sef_init_info_t *info)
 
 	if (type == SEF_INIT_FRESH) {
 		secret_init_state();
+		printf("%s ready for work.\n", SECRET_ANNOUNCE_NAME);
 	} else { /* SEF_INIT_LU or SEF_INIT_RESTART */
 		r = ds_retrieve_mem(DS_SECRET_STATE_LABEL, 
 			(char *)&secret_global_state, &len);
 		if (r == OK) {
-	printf("%s: State restored from DS.\n", SECRET_KEEPER_NAME);
+			if (type == SEF_INIT_LU) {
+				printf("%s: I'm a new version!\n",
+					SECRET_ANNOUNCE_NAME);
+			} else { /* SEF_INIT_RESTART */
+				printf("%s: I've just been restarted!\n",
+					SECRET_ANNOUNCE_NAME);
+			}
 			secret_global_state.open_count = 0;
 		} else {
 		printf("%s: DS retrieval failed (%d). Starting fresh.\n",
@@ -104,8 +110,9 @@ static int secret_save_state(int state)
 {
 	int r;
 	
-	r = ds_publish_mem(DS_SECRET_STATE_LABEL, &secret_global_state, \
-		sizeof(secret_global_state), DSF_OVERWRITE);
+	r = ds_publish_mem(DS_SECRET_STATE_LABEL, &secret_global_state, 
+						sizeof(secret_global_state), 
+						DSF_OVERWRITE);
 	
 	if (r != OK) {
 	printf("%s: ds_publish_mem failed: %d\n", SECRET_KEEPER_NAME, r);
@@ -126,8 +133,6 @@ static int secret_open(message *m_ptr)
 
 	r = getnucred(caller_endpt, &ucred);
 	if (r != OK) {
-		printf("%s: Failed to get creds for %d: %d\n", 
-        SECRET_KEEPER_NAME, caller_endpt, r);
 		return EGENERIC;
 	}
 
@@ -135,38 +140,38 @@ static int secret_open(message *m_ptr)
 	if ((flags & (R_BIT | W_BIT)) == (R_BIT | W_BIT)) {
 		return EACCES;
 	}
+	
+	/* 2. Cannot open for R/A, W/A, R/W/A, W/A, etc. */
+	if (flags & O_APPEND) {
+		return EACCES;
+	}
 
 	if (secret_global_state.owner_uid == INVAL_UID) {
 		/* Secret is EMPTY (Owned by nobody) */
 		if (flags & (R_BIT | W_BIT)) {
-	/* Any process may open for R or W. Owner becomes opener. */
+			/* Owner becomes opener. */
 			secret_global_state.owner_uid = ucred.uid;
-			secret_global_state.open_count++;
-			return OK;
 		}
 	} else {
 		/* Secret is FULL (Owned by somebody) */
 
-/* 2. Attempts to open a full secret for writing results in ENOSPC */
+		/* 3. Open a full secret for writing results in ENOSPC */
 		if (flags & W_BIT) {
 			return ENOSPC;
 		}
 
-		/* 3. Check for read access (R_BIT) */
+		/* 4. Check for read access (R_BIT) */
 		if (flags & R_BIT) {
-			if (ucred.uid == secret_global_state.owner_uid) {
-				/* Owner match, allow read */
-				secret_global_state.read_opened = 1;
-				secret_global_state.open_count++;
-				return OK;
-			} else {
-	/* Non-owner attempts to read result in EACCES */
+			if (ucred.uid != secret_global_state.owner_uid) {
+		/* Non-owner attempts to read result in EACCES */
 				return EACCES;
+			} else {
+				secret_global_state.read_opened = 1;
 			}
 		}
 	}
 	
-/* Catch-all for non R/W opens */
+	/* Final success path increment count and return OK */
 	secret_global_state.open_count++;
 	return OK;
 }
@@ -174,14 +179,12 @@ static int secret_open(message *m_ptr)
 /* Close callback. Resets the secret state if conditions are met. */
 static int secret_close(message *m_ptr)
 {
-	/* UNUSED(m_ptr); */
-
 	if (secret_global_state.open_count > 0) {
 		secret_global_state.open_count--;
 	}
 
 	/* Reset secret if last FD closed and a read was ever attempted. */
-	if (secret_global_state.open_count == 0 && \
+	if (secret_global_state.open_count == 0 && 
 		secret_global_state.read_opened == 1) {
 		secret_init_state();
 	}
@@ -202,23 +205,15 @@ static struct device *secret_prepare(dev_t device)
 }
 
 /* Transfer callback. Handles safe copy in (write) and out (read). */
-static int secret_transfer(endpoint_t endpt, int opcode, u64_t position,\
+static int secret_transfer(endpoint_t endpt, int opcode, u64_t position,
 	iovec_t *iov, unsigned int nr_req, endpoint_t user_endpt)
 {
 	size_t bytes_left, bytes_to_transfer;
 	int r;
-	struct ucred ucred;
 	
-	/* UNUSED(endpt); */
-	
+	/* The VFS has already checked permissions via secret_open */
 	if (nr_req != 1) return EGENERIC; 
 
-	/* Check permissions */
-	r = getnucred(user_endpt, &ucred);
-	if (r != OK || ucred.uid != secret_global_state.owner_uid) {
-		return EACCES; 
-	}
-	
 	
 	if (opcode == DEV_SCATTER_S) { /* Write (user to driver) */
 		bytes_left = SECRET_SIZE - secret_global_state.secret_len;
@@ -229,20 +224,21 @@ static int secret_transfer(endpoint_t endpt, int opcode, u64_t position,\
 		}
 
 		/* iov[0].iov_addr holds the grant ID */
-	r = sys_safecopyfrom(user_endpt, (cp_grant_id_t)iov[0].iov_addr,\
-			0, (vir_bytes)(secret_global_state.data + \
-	secret_global_state.secret_len), bytes_to_transfer, SAFEPK_D);
+		r = sys_safecopyfrom(user_endpt, 
+			(cp_grant_id_t)iov[0].iov_addr, 0, 
+			(vir_bytes)(secret_global_state.data + 
+			secret_global_state.secret_len), 
+			bytes_to_transfer, SAFEPK_D);
 
 		if (r != OK) {
 			return r;
 		}
 		
 		secret_global_state.secret_len += bytes_to_transfer;
-
 		return bytes_to_transfer;
 
 	} else if (opcode == DEV_GATHER_S) { /* Read (driver to user) */
-	/* Position is ignored as /dev/Secret is not seekable per PDF */
+		/* Position is ignored as /dev/Secret is not seekable */
 		size_t pos_offset = 0; 
 		
 		if (pos_offset >= secret_global_state.secret_len) {
@@ -253,8 +249,9 @@ static int secret_transfer(endpoint_t endpt, int opcode, u64_t position,\
 		bytes_to_transfer = MIN(iov[0].iov_size, bytes_left);
 
 		/* iov[0].iov_addr holds the grant ID */
-		r = sys_safecopyto(user_endpt, (cp_grant_id_t)iov[0].iov_addr,\
-         0,(vir_bytes)(secret_global_state.data + pos_offset), \
+		r = sys_safecopyto(user_endpt, 
+			(cp_grant_id_t)iov[0].iov_addr, 0,
+			(vir_bytes)(secret_global_state.data + pos_offset), 
 			bytes_to_transfer, SAFEPK_D);
 
 		if (r != OK) {
@@ -290,11 +287,11 @@ static int secret_ioctl(message *m_ptr)
 		}
 		
 		/* Copy the uid_t argument from the user's address space */
-		r = sys_safecopyfrom(caller_endpt, grant_id, 0, \
-		(vir_bytes)&grantee_uid, sizeof(grantee_uid), SAFEPK_D);
+		r = sys_safecopyfrom(caller_endpt, grant_id, 0, 
+			(vir_bytes)&grantee_uid, sizeof(grantee_uid), SAFEPK_D);
 
 		if (r != OK) {
-		printf("%s: sys_safecopyfrom failed for SSGRANT: %d\n",\
+			printf("%s: sys_safecopyfrom failed for SSGRANT: %d\n",
 				SECRET_KEEPER_NAME, r);
 			return EFAULT;
 		}
@@ -308,6 +305,8 @@ static int secret_ioctl(message *m_ptr)
 		return ENOTTY;
 	}
 }
+
+
 int main(void)
 {
 	/* Set SEF callbacks for init and Live Update state saving. */
