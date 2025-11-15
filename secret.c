@@ -1,12 +1,14 @@
 #include <minix/drivers.h>
-#include <minix/driver.h>
-#include <sys/types.h>
-#include <sys/cdefs.h>
+#include <minix/chardriver.h>
 #include <stdio.h>
-#include <string.h>
 #include <stdlib.h>
-#include <errno.h>
-#include <lib.h>
+#include <minix/ds.h>
+#include <minix/const.h> // R_BIT and W_BIT
+#include <sys/ioc_secret.h> // SSGRANT definition
+#include <sys/ucred.h> // struct ucred
+#include <minix/syslib.h> // sys_getnucred
+#include <sys/types.h>
+#include "secret.h"
 
 /* Max size of the secret buffer (8KB) */
 #define MAX_SECRET_SIZE 8192 
