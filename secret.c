@@ -19,8 +19,11 @@
 #define SECRET_SIZE 8192
 #endif
 
-/* Memory segment for safe copy operations. 'D' is for Data. */
-#define D 0
+/*
+ * FIX: Renamed 'D' to 'SAFEPK_D' to avoid redefinition conflict with pln.h.
+ * Memory segment for safe copy operations. 0 is the data segment.
+ */
+#define SAFEPK_D 0
 
 /* DS label for storing driver state for Live Update */
 #define DS_SECRET_STATE_LABEL "secret_keeper_state"
@@ -46,7 +49,7 @@ struct secret_state {
 static struct secret_state secret_global_state;
 
 /* Function prototypes for driver callbacks */
-static char *secret_name(void);
+/* static char *secret_name(void); -- REMOVED, as chardriver struct doesn't use it */
 static int secret_open(message *m_ptr);
 static int secret_close(message *m_ptr);
 static struct device *secret_prepare(dev_t device);
@@ -145,21 +148,14 @@ static int secret_save_state(int state)
 }
 
 /*
- * Driver name callback.
- */
-static char *secret_name(void)
-{
-    return SECRET_KEEPER_NAME;
-}
-
-/*
  * Open callback. Handles permission and ownership logic.
  */
 static int secret_open(message *m_ptr)
 {
     struct ucred ucred;
     endpoint_t caller_endpt = m_ptr->m_source;
-    int flags = m_ptr->COUNT; /* Open flags re-mapped to R_BIT/W_BIT */
+    /* Open flags re-mapped to R_BIT/W_BIT are in m_ptr->COUNT */
+    int flags = m_ptr->COUNT; 
     int r;
 
     /* Get the credentials of the calling process */
@@ -206,7 +202,7 @@ static int secret_open(message *m_ptr)
         }
     }
     
-    /* Catch-all for non R/W opens (e.g., O_NONBLOCK only) */
+    /* Catch-all for non R/W opens (e.g., O_NONBLOCK only, or just using open/close) */
     secret_global_state.open_count++;
     return OK;
 }
@@ -216,7 +212,7 @@ static int secret_open(message *m_ptr)
  */
 static int secret_close(message *m_ptr)
 {
-    UNUSED(m_ptr);
+    /* UNUSED(m_ptr); is now removed as it's handled by chardriver.h logic */
 
     if (secret_global_state.open_count > 0) {
         secret_global_state.open_count--;
@@ -239,7 +235,7 @@ static int secret_close(message *m_ptr)
 static struct device *secret_prepare(dev_t device)
 {
     static struct device dev;
-    UNUSED(device);
+    /* UNUSED(device); is now removed as it's handled by chardriver.h logic */
 
     /* For a single device, the size is the max secret size. */
     dev.dv_base = make64(0, 0);
@@ -261,8 +257,7 @@ static int secret_transfer(endpoint_t endpt, int opcode, u64_t position,
     int r;
     struct ucred ucred;
     
-    UNUSED(endpt);
-    UNUSED(position);
+    /* UNUSED(endpt); and UNUSED(position); removed */
     
     /* We expect a single request vector for character device */
     if (nr_req != 1) return EGENERIC; 
@@ -274,9 +269,7 @@ static int secret_transfer(endpoint_t endpt, int opcode, u64_t position,
         return EACCES; 
     }
     
-    /* For character device, we treat position as 0 (not seekable), 
-     * but we use the internal write_position.
-     */
+    /* For character device, we use the internal write_position. */
     
     if (opcode == DEV_SCATTER_S) { /* Write (data from user to driver) */
         bytes_left = SECRET_SIZE - secret_global_state.secret_len;
@@ -286,9 +279,10 @@ static int secret_transfer(endpoint_t endpt, int opcode, u64_t position,
             return ENOSPC; /* No space left in the secret buffer */
         }
 
-        r = sys_safecopyfrom(user_endpt, iov[0].iov_grant, 0,
+        /* FIX: Use iov[0].iov_addr (a pointer) to carry the grant ID (an integer) */
+        r = sys_safecopyfrom(user_endpt, (cp_grant_id_t)iov[0].iov_addr, 0,
                              (vir_bytes)(secret_global_state.data + secret_global_state.secret_len),
-                             bytes_to_transfer, D);
+                             bytes_to_transfer, SAFEPK_D); /* FIX: Use SAFEPK_D */
 
         if (r != OK) {
             return r;
@@ -309,9 +303,10 @@ static int secret_transfer(endpoint_t endpt, int opcode, u64_t position,
             return 0; /* EOF */
         }
 
-        r = sys_safecopyto(user_endpt, iov[0].iov_grant, 0,
+        /* FIX: Use iov[0].iov_addr (a pointer) to carry the grant ID (an integer) */
+        r = sys_safecopyto(user_endpt, (cp_grant_id_t)iov[0].iov_addr, 0,
                            (vir_bytes)(secret_global_state.data + secret_global_state.write_position),
-                           bytes_to_transfer, D);
+                           bytes_to_transfer, SAFEPK_D); /* FIX: Use SAFEPK_D */
 
         if (r != OK) {
             return r;
@@ -334,7 +329,8 @@ static int secret_ioctl(message *m_ptr)
 {
     endpoint_t caller_endpt = m_ptr->m_source;
     int request = m_ptr->REQUEST;
-    cp_grant_id_t grant_id = m_ptr->IO_GRANT;
+    /* FIX: Cast IO_GRANT to cp_grant_id_t to avoid pointer-to-integer warning */
+    cp_grant_id_t grant_id = (cp_grant_id_t)m_ptr->IO_GRANT;
     struct ucred ucred;
     uid_t grantee_uid;
     int r;
@@ -353,7 +349,7 @@ static int secret_ioctl(message *m_ptr)
         
         /* Copy the uid_t argument from the user's address space */
         r = sys_safecopyfrom(caller_endpt, grant_id, 0, (vir_bytes)&grantee_uid, 
-                             sizeof(grantee_uid), D);
+                             sizeof(grantee_uid), SAFEPK_D); /* FIX: Use SAFEPK_D */
 
         if (r != OK) {
             printf("%s: sys_safecopyfrom failed for SSGRANT: %d\n", SECRET_KEEPER_NAME, r);
