@@ -42,7 +42,7 @@ static struct secret_state secret_global_state;
 static int secret_open(message *m_ptr);
 static int secret_close(message *m_ptr);
 static struct device *secret_prepare(dev_t device);
-static int secret_transfer(endpoint_t endpt, int opcode, u64_t position,
+static int secret_transfer(endpoint_t endpt, int opcode, u64_t position,\
 	iovec_t *iov, unsigned int nr_req, endpoint_t user_endpt);
 static int secret_ioctl(message *m_ptr);
 
@@ -104,7 +104,7 @@ static int secret_save_state(int state)
 {
 	int r;
 	
-	r = ds_publish_mem(DS_SECRET_STATE_LABEL, &secret_global_state, 
+	r = ds_publish_mem(DS_SECRET_STATE_LABEL, &secret_global_state, \
 						sizeof(secret_global_state), DSF_OVERWRITE);
 	
 	if (r != OK) {
@@ -202,7 +202,7 @@ static struct device *secret_prepare(dev_t device)
 }
 
 /* Transfer callback. Handles safe copy in (write) and out (read). */
-static int secret_transfer(endpoint_t endpt, int opcode, u64_t position,
+static int secret_transfer(endpoint_t endpt, int opcode, u64_t position,\
 	iovec_t *iov, unsigned int nr_req, endpoint_t user_endpt)
 {
 	size_t bytes_left, bytes_to_transfer;
@@ -229,7 +229,7 @@ static int secret_transfer(endpoint_t endpt, int opcode, u64_t position,
 		}
 
 		/* iov[0].iov_addr holds the grant ID */
-		r = sys_safecopyfrom(user_endpt, (cp_grant_id_t)iov[0].iov_addr, 
+		r = sys_safecopyfrom(user_endpt, (cp_grant_id_t)iov[0].iov_addr, \
 			0, (vir_bytes)(secret_global_state.data + \
 			secret_global_state.secret_len), bytes_to_transfer, SAFEPK_D);
 
@@ -253,7 +253,7 @@ static int secret_transfer(endpoint_t endpt, int opcode, u64_t position,
 		bytes_to_transfer = MIN(iov[0].iov_size, bytes_left);
 
 		/* iov[0].iov_addr holds the grant ID */
-		r = sys_safecopyto(user_endpt, (cp_grant_id_t)iov[0].iov_addr, 0,
+		r = sys_safecopyto(user_endpt, (cp_grant_id_t)iov[0].iov_addr, 0,\
 			(vir_bytes)(secret_global_state.data + pos_offset), \
 			bytes_to_transfer, SAFEPK_D);
 
@@ -308,8 +308,6 @@ static int secret_ioctl(message *m_ptr)
 		return ENOTTY;
 	}
 }
-
-
 int main(void)
 {
 	/* Set SEF callbacks for init and Live Update state saving. */
