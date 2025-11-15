@@ -1,6 +1,5 @@
 #include <minix/drivers.h>
 #include <minix/driver.h>
-#include <minix/sef.h>
 #include <sys/types.h>
 #include <sys/cdefs.h>
 #include <sys/ioc_chr_drv.h>
