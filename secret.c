@@ -294,7 +294,7 @@ static int secret_ioctl(message *m_ptr)
 		(vir_bytes)&grantee_uid, sizeof(grantee_uid), SAFEPK_D);
 
 		if (r != OK) {
-			printf("%s: sys_safecopyfrom failed for SSGRANT: %d\n",\
+		printf("%s: sys_safecopyfrom failed for SSGRANT: %d\n",\
 				SECRET_KEEPER_NAME, r);
 			return EFAULT;
 		}
