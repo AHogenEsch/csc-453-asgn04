@@ -42,7 +42,7 @@ static struct secret_state secret_global_state;
 static int secret_open(message *m_ptr);
 static int secret_close(message *m_ptr);
 static struct device *secret_prepare(dev_t device);
-static int secret_transfer(endpoint_t endpt, int opcode, u64_t position,
+static int secret_transfer(endpoint_t endpt, int opcode, u64_t *position,
 	iovec_t *iov, unsigned int nr_req, endpoint_t user_endpt);
 static int secret_ioctl(message *m_ptr);
 
@@ -206,7 +206,7 @@ static struct device *secret_prepare(dev_t device)
 }
 
 /* Transfer callback. Handles safe copy in (write) and out (read). */
-static int secret_transfer(endpoint_t endpt, int opcode, u64_t position,
+static int secret_transfer(endpoint_t endpt, int opcode, u64_t *position,
 	iovec_t *iov, unsigned int nr_req, endpoint_t user_endpt)
 {
 	size_t bytes_left, bytes_to_transfer;
@@ -244,6 +244,7 @@ static int secret_transfer(endpoint_t endpt, int opcode, u64_t position,
         
 /* CRITICAL FIX: Use the VFS-provided position for sequential reads. */
         size_t pos_offset = (size_t)*position; 
+
 		
 		if (pos_offset >= secret_global_state.secret_len) {
 			return 0; /* EOF */
