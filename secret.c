@@ -7,6 +7,7 @@
 #include <sys/ioc_secret.h>
 #include <sys/ucred.h>
 #include <minix/syslib.h>
+#include <minix/sysutil.h> /* For low64() */
 #include <sys/types.h>
 
 #include "secret.h" /* For SECRET_SIZE */
@@ -21,10 +22,7 @@
 /* Driver name string */
 #define SECRET_KEEPER_NAME "secret"
 
-/*
- * Global state structure for /dev/Secret.
- * Holds all driver state, for Live Update compatibility.
- */
+/* Global state structure for /dev/Secret. */
 struct secret_state {
 	/* UID of the current secret owner (INVAL_UID if empty) */
 	uid_t owner_uid;
@@ -60,55 +58,44 @@ static struct chardriver secret_driver = {
 	.cdr_ioctl 	 = secret_ioctl,
 	.cdr_prepare 	= secret_prepare,
 	.cdr_transfer 	= secret_transfer,
-	.cdr_cleanup 	= NULL, /* Not needed */
-	.cdr_alarm 	 = NULL, /* Not needed */
-	.cdr_cancel 	= NULL, /* Not needed */
-	.cdr_select 	= NULL, /* Not needed */
-	.cdr_other 	 = NULL, /* Not needed */
+	.cdr_cleanup 	= NULL,
+	.cdr_alarm 	 = NULL,
+	.cdr_cancel 	= NULL,
+	.cdr_select 	= NULL,
+	.cdr_other 	 = NULL,
 };
 
-/* Resets the global state to an "empty" secret. */
+/* Resets the global state. */
 static void secret_init_state(void)
 {
-	/* Mark the secret as not owned */
 	secret_global_state.owner_uid = INVAL_UID;
-	/* Secret has no content */
 	secret_global_state.secret_len = 0;
-	/* No file descriptors are open */
 	secret_global_state.open_count = 0;
-	/* No read has occurred since the last write/reset */
 	secret_global_state.read_opened = 0;
 }
 
-/* SEF Callback for fresh initialization or after live update/restart. */
+/* SEF Callback for fresh init or LU/restart. */
 static int secret_init_fresh(int type, sef_init_info_t *info)
 {
 	size_t len = sizeof(secret_global_state);
 	int r;
 
 	if (type == SEF_INIT_FRESH) {
-		/* Initialize the state structure for a fresh start */
 		secret_init_state();
 	} else { /* SEF_INIT_LU or SEF_INIT_RESTART */
-		/* Retrieve the state from the Data Store (DS) */
 		r = ds_retrieve_mem(DS_SECRET_STATE_LABEL, 
 			(char *)&secret_global_state, &len);
 		if (r == OK) {
-			/* State successfully restored */
 			printf("%s: State restored from DS.\n", SECRET_KEEPER_NAME);
-			/* open_count must be zero after LU/restart */
 			secret_global_state.open_count = 0;
 		} else {
-			/* If retrieval fails, start fresh */
 			printf("%s: DS retrieval failed (%d). Starting fresh.\n", 
 				SECRET_KEEPER_NAME, r);
 			secret_init_state();
 		}
-		/* Delete the state from DS after retrieval */
 		ds_delete_mem(DS_SECRET_STATE_LABEL);
 	}
 
-	/* Announce we are ready */
 	chardriver_announce();
 	return(OK);
 }
@@ -118,7 +105,6 @@ static int secret_save_state(int state)
 {
 	int r;
 	
-	/* Save the entire global state structure to the Data Store (DS) */
 	r = ds_publish_mem(DS_SECRET_STATE_LABEL, &secret_global_state, 
 						sizeof(secret_global_state), DSF_OVERWRITE);
 	
@@ -131,16 +117,14 @@ static int secret_save_state(int state)
 	return(r);
 }
 
-/* Open callback. Handles permission and ownership logic. */
+/* Open callback. */
 static int secret_open(message *m_ptr)
 {
 	struct ucred ucred;
 	endpoint_t caller_endpt = m_ptr->m_source;
-	/* Open flags re-mapped to R_BIT/W_BIT are in m_ptr->COUNT */
 	int flags = m_ptr->COUNT; 
 	int r;
 
-	/* Get the credentials of the calling process */
 	r = getnucred(caller_endpt, &ucred);
 	if (r != OK) {
 		printf("%s: Failed to get credentials for endpoint %d: %d\n", 
@@ -148,16 +132,15 @@ static int secret_open(message *m_ptr)
 		return EGENERIC;
 	}
 
-	/* 1. /dev/Secret may not be opened for read-write access (EACCES) */
+	/* 1. Cannot open for R/W access (EACCES) */
 	if ((flags & (R_BIT | W_BIT)) == (R_BIT | W_BIT)) {
 		return EACCES;
 	}
 
-	/* State check */
 	if (secret_global_state.owner_uid == INVAL_UID) {
 		/* Secret is EMPTY (Owned by nobody) */
 		if (flags & (R_BIT | W_BIT)) {
-			/* Any process may open for R or W. Owner becomes the opener. */
+			/* Any process may open for R or W. Owner becomes opener. */
 			secret_global_state.owner_uid = ucred.uid;
 			secret_global_state.open_count++;
 			return OK;
@@ -165,7 +148,7 @@ static int secret_open(message *m_ptr)
 	} else {
 		/* Secret is FULL (Owned by somebody) */
 
-		/* 2. Attempts to open a full secret for writing result in ENOSPC */
+		/* 2. Attempts to open a full secret for writing results in ENOSPC */
 		if (flags & W_BIT) {
 			return ENOSPC;
 		}
@@ -178,13 +161,13 @@ static int secret_open(message *m_ptr)
 				secret_global_state.open_count++;
 				return OK;
 			} else {
-	/* Attempts to read a secret belonging to another user result in EACCES */
+	/* Non-owner attempts to read result in EACCES */
 				return EACCES;
 			}
 		}
 	}
 	
-/* Catch-all for non R/W opens (O_NONBLOCK only, or just using open/close) */
+/* Catch-all for non R/W opens */
 	secret_global_state.open_count++;
 	return OK;
 }
@@ -192,17 +175,13 @@ static int secret_open(message *m_ptr)
 /* Close callback. Resets the secret state if conditions are met. */
 static int secret_close(message *m_ptr)
 {
-	/* Handled by chardriver.h logic */
 	/* UNUSED(m_ptr); */
 
 	if (secret_global_state.open_count > 0) {
 		secret_global_state.open_count--;
 	}
 
-	/*
-	 * When the last file descriptor is closed after any read file descriptor
-	 * has been opened, /dev/Secret reverts to being empty.
-	 */
+	/* Reset secret if last FD closed and a read was ever attempted. */
 	if (secret_global_state.open_count == 0 && \
 		secret_global_state.read_opened == 1) {
 		secret_init_state();
@@ -215,10 +194,8 @@ static int secret_close(message *m_ptr)
 static struct device *secret_prepare(dev_t device)
 {
 	static struct device dev;
-	/* Handled by chardriver.h logic */
 	/* UNUSED(device); */
 
-	/* For a single device, the size is the max secret size. */
 	dev.dv_base = make64(0, 0);
 	dev.dv_size = make64(0, SECRET_SIZE);
 
@@ -233,44 +210,41 @@ static int secret_transfer(endpoint_t endpt, int opcode, u64_t position,
 	int r;
 	struct ucred ucred;
 	
-	/* UNUSED(endpt); removed */
+	/* UNUSED(endpt); */
 	
-	/* We expect a single request vector for character device */
 	if (nr_req != 1) return EGENERIC; 
 
-	/* Get the credentials of the I/O initiating process */
+	/* Check permissions */
 	r = getnucred(user_endpt, &ucred);
 	if (r != OK || ucred.uid != secret_global_state.owner_uid) {
-		/* The owner check should have happened in open, but be safe */
 		return EACCES; 
 	}
 	
 	
-	if (opcode == DEV_SCATTER_S) { /* Write (data from user to driver) */
+	if (opcode == DEV_SCATTER_S) { /* Write (user to driver) */
 		bytes_left = SECRET_SIZE - secret_global_state.secret_len;
 		bytes_to_transfer = MIN(iov[0].iov_size, bytes_left);
 
 		if (bytes_to_transfer == 0) {
-			return ENOSPC; /* No space left in the secret buffer */
+			return ENOSPC;
 		}
 
-/* iov[0].iov_addr holds the grant ID */
-		r = sys_safecopyfrom(user_endpt, (cp_grant_id_t)iov[0].iov_addr, 0,
-			(vir_bytes)(secret_global_state.data +\
-				secret_global_state.secret_len), bytes_to_transfer, \
+		/* iov[0].iov_addr holds the grant ID */
+		r = sys_safecopyfrom(user_endpt, (cp_grant_id_t)iov[0].iov_addr, 
+			0, (vir_bytes)(secret_global_state.data +\
+			secret_global_state.secret_len), bytes_to_transfer, \
 			SAFEPK_D);
 
 		if (r != OK) {
 			return r;
 		}
 		
-/* Update state: write is always appending to secret_len */
 		secret_global_state.secret_len += bytes_to_transfer;
 
 		return bytes_to_transfer;
 
-	} else if (opcode == DEV_GATHER_S) { /* Read (data from driver to user) */
-		/* The VFS position argument supports lseek() */
+	} else if (opcode == DEV_GATHER_S) { /* Read (driver to user) */
+		/* Use low64 for safe cast of u64_t to size_t for position */
 		size_t pos_offset = (size_t)low64(position);
 		
 		if (pos_offset >= secret_global_state.secret_len) {
@@ -280,7 +254,7 @@ static int secret_transfer(endpoint_t endpt, int opcode, u64_t position,
 		bytes_left = secret_global_state.secret_len - pos_offset;
 		bytes_to_transfer = MIN(iov[0].iov_size, bytes_left);
 
-/* iov[0].iov_addr holds the grant ID */
+		/* iov[0].iov_addr holds the grant ID */
 		r = sys_safecopyto(user_endpt, (cp_grant_id_t)iov[0].iov_addr, 0,
 			(vir_bytes)(secret_global_state.data + pos_offset),\
 			bytes_to_transfer, SAFEPK_D);
@@ -289,8 +263,6 @@ static int secret_transfer(endpoint_t endpt, int opcode, u64_t position,
 			return r;
 		}
 
-		/* VFS handles position update, no need to update driver state */
-
 		return bytes_to_transfer;
 
 	} else {
@@ -298,18 +270,16 @@ static int secret_transfer(endpoint_t endpt, int opcode, u64_t position,
 	}
 }
 
-/* Ioctl callback. Handles SSGRANT to change ownership. */
+/* Ioctl callback. Handles SSGRANT. */
 static int secret_ioctl(message *m_ptr)
 {
 	endpoint_t caller_endpt = m_ptr->m_source;
 	int request = m_ptr->REQUEST;
-	/* Cast IO_GRANT to cp_grant_id_t to avoid pointer-to-integer warning */
 	cp_grant_id_t grant_id = (cp_grant_id_t)m_ptr->IO_GRANT;
 	struct ucred ucred;
 	uid_t grantee_uid;
 	int r;
 	
-	/* Get the credentials of the calling process */
 	r = getnucred(caller_endpt, &ucred);
 	if (r != OK) {
 		return r;
@@ -336,7 +306,7 @@ static int secret_ioctl(message *m_ptr)
 		return OK;
 
 	} else {
-		/* Any ioctl(2) requests other than SSGRANT get a ENOTTY response */
+		/* Non-SSGRANT ioctl requests get ENOTTY */
 		return ENOTTY;
 	}
 }
@@ -344,16 +314,12 @@ static int secret_ioctl(message *m_ptr)
 
 int main(void)
 {
-	/*
-	 * SEF initialization must be done first.
-	 * Set callbacks for initialization and Live Update (LU) state saving.
-	 */
+	/* Set SEF callbacks for init and Live Update state saving. */
 	sef_setcb_init_fresh(secret_init_fresh);
-	sef_setcb_init_lu(secret_init_fresh); /* Use same init for LU restore */
+	sef_setcb_init_lu(secret_init_fresh); 
 	sef_setcb_init_restart(secret_init_fresh);
 	sef_setcb_lu_state_save(secret_save_state);
 
-	/* Standard SEF startup */
 	sef_startup();
 
 	/* Start the main character driver task loop */
