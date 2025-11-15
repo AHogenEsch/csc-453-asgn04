@@ -229,7 +229,7 @@ static int secret_transfer(endpoint_t endpt, int opcode, u64_t position,\
 		}
 
 		/* iov[0].iov_addr holds the grant ID */
-		r = sys_safecopyfrom(user_endpt, (cp_grant_id_t)iov[0].iov_addr,\
+	r = sys_safecopyfrom(user_endpt, (cp_grant_id_t)iov[0].iov_addr,\
 			0, (vir_bytes)(secret_global_state.data + \
 	secret_global_state.secret_len), bytes_to_transfer, SAFEPK_D);
 
