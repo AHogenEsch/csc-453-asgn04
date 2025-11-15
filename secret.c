@@ -126,7 +126,7 @@ static int secret_open(message *m_ptr)
 
 	r = getnucred(caller_endpt, &ucred);
 	if (r != OK) {
-		printf("%s: Failed to get credentials for endpoint %d: %d\n", 
+		printf("%s: Failed to get creds for %d: %d\n", 
 				SECRET_KEEPER_NAME, caller_endpt, r);
 		return EGENERIC;
 	}
@@ -230,9 +230,8 @@ static int secret_transfer(endpoint_t endpt, int opcode, u64_t position,
 
 		/* iov[0].iov_addr holds the grant ID */
 		r = sys_safecopyfrom(user_endpt, (cp_grant_id_t)iov[0].iov_addr, 
-			0, (vir_bytes)(secret_global_state.data +\
-			secret_global_state.secret_len), bytes_to_transfer, \
-			SAFEPK_D);
+			0, (vir_bytes)(secret_global_state.data + \
+			secret_global_state.secret_len), bytes_to_transfer, SAFEPK_D);
 
 		if (r != OK) {
 			return r;
@@ -243,8 +242,8 @@ static int secret_transfer(endpoint_t endpt, int opcode, u64_t position,
 		return bytes_to_transfer;
 
 	} else if (opcode == DEV_GATHER_S) { /* Read (driver to user) */
-		/* Use low64 for safe cast of u64_t to size_t for position */
-		size_t pos_offset = (size_t)low64(position);
+		/* Position is ignored as /dev/Secret is not seekable per PDF */
+		size_t pos_offset = 0; 
 		
 		if (pos_offset >= secret_global_state.secret_len) {
 			return 0; /* EOF */
@@ -255,7 +254,7 @@ static int secret_transfer(endpoint_t endpt, int opcode, u64_t position,
 
 		/* iov[0].iov_addr holds the grant ID */
 		r = sys_safecopyto(user_endpt, (cp_grant_id_t)iov[0].iov_addr, 0,
-			(vir_bytes)(secret_global_state.data + pos_offset),\
+			(vir_bytes)(secret_global_state.data + pos_offset), \
 			bytes_to_transfer, SAFEPK_D);
 
 		if (r != OK) {
