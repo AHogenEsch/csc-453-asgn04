@@ -1,6 +1,5 @@
 #include <minix/drivers.h>
 #include <minix/driver.h>
-#include <minix/safecopies.h>
 #include <minix/endpoint.h>
 #include <minix/ioctl.h>
 #include <minix/sef.h>
