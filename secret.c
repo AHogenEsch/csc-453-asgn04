@@ -147,7 +147,7 @@ static int secret_open(message *m_ptr)
 	} else {
 		/* Secret is FULL (Owned by somebody) */
 
-		/* 2. Attempts to open a full secret for writing results in ENOSPC */
+/* 2. Attempts to open a full secret for writing results in ENOSPC */
 		if (flags & W_BIT) {
 			return ENOSPC;
 		}
