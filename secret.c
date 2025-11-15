@@ -19,12 +19,12 @@ typedef unsigned int cdev_id_t;
 static int secret_open(devminor_t minor, int access, endpoint_t user_endpt);
 static int secret_close(devminor_t minor);
 static ssize_t secret_read(devminor_t minor, u64_t position, endpoint_t endpt,
-    cp_grant_id_t grant, size_t size, int flags, cdev_id_t id);
+    cp_grant_id_t grant, size_t size, int UNUSED(flags), cdev_id_t id);
 static ssize_t secret_write(devminor_t minor, u64_t position, endpoint_t endpt,
-    cp_grant_id_t grant, size_t size, int flags, cdev_id_t id);
+    cp_grant_id_t grant, size_t size, int UNUSED(flags), cdev_id_t id);
 static int secret_ioctl(devminor_t minor, 
     unsigned long request, endpoint_t endpt, cp_grant_id_t grant, 
-    int flags, endpoint_t user_endpt, cdev_id_t id);
+    int UNUSED(flags), endpoint_t user_endpt, cdev_id_t id);
 
 // Helper function to reset the secret state
 static void secret_reset(void);
@@ -38,11 +38,11 @@ static int lu_state_restore(void);
 /* Entry points to the secret driver. */
 static struct chardriver secret_tab =
 {
-    .cdr_open = secret_open,
-    .cdr_close = secret_close,
-    .cdr_read = secret_read,
-    .cdr_write = secret_write,
-    .cdr_ioctl = secret_ioctl,
+.cdr_open = secret_open,
+.cdr_close = secret_close,
+.cdr_read = secret_read,
+.cdr_write = secret_write,
+.cdr_ioctl =  secret_ioctl,
 };
  /** State variable to count the number of times the device has been opened.
  * Note that this is not the regular type of open counter: it never decreases.
